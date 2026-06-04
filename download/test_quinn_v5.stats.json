@@ -1,0 +1,15 @@
+{
+  "bvh": "output-an-elderly-man-walks-forward.bvh",
+  "output": "test_quinn_v5.fbx",
+  "skeleton_fbx": "SKM_Quinn_Simple.FBX",
+  "frames": 180,
+  "fps": 30.0,
+  "duration": 6.0,
+  "bvh_bones": 78,
+  "quinn_bones": 89,
+  "mapped": 61,
+  "unmapped": 27,
+  "scale": 0.01,
+  "size": 1451462,
+  "version": "v5.0"
+}
