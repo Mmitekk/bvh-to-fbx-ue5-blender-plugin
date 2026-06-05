@@ -23,11 +23,22 @@ A Blender addon that converts BVH motion capture files to FBX animation for **Un
 
 ### Installation
 
-1. Download the latest `bvh_to_fbx_ue5_addon.py` from [Releases](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases)
+**Option A — Install from ZIP (recommended):**
+
+1. Download `bvh_to_fbx_ue5_addon.zip` from [Releases](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases) (the file labeled "Blender Addon ZIP")
+2. Open Blender → **Edit** → **Preferences** → **Add-ons** → **Install...**
+3. Select the downloaded `.zip` file
+4. Enable the addon **"BVH to FBX for UE5"**
+5. The panel appears in the 3D Viewport sidebar under the **BVH2FBX** tab (press `N` to open the sidebar)
+
+> ⚠️ **Do NOT download the repository ZIP ("Source code")** — it won't install in Blender because the addon file is nested inside a subfolder. Use the **Blender Addon ZIP** asset from the release instead.
+
+**Option B — Install from .py file:**
+
+1. Download `bvh_to_fbx_ue5_addon.py` from [Releases](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases)
 2. Open Blender → **Edit** → **Preferences** → **Add-ons** → **Install...**
 3. Select the downloaded `.py` file
 4. Enable the addon **"BVH to FBX for UE5"**
-5. The panel appears in the 3D Viewport sidebar under the **BVH2FBX** tab (press `N` to open the sidebar)
 
 ### Usage
 
@@ -114,11 +125,22 @@ Mixamo naming is also supported (e.g., `mixamorig:Hips` → `pelvis`).
 
 ### Установка
 
-1. Скачайте последний файл `bvh_to_fbx_ue5_addon.py` из [Релизов](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases)
+**Способ A — Установка из ZIP (рекомендуется):**
+
+1. Скачайте `bvh_to_fbx_ue5_addon.zip` из [Релизов](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases) (файл с меткой "Blender Addon ZIP")
+2. Откройте Blender → **Правка** → **Настройки** → **Аддоны** → **Установить...**
+3. Выберите скачанный файл `.zip`
+4. Включите аддон **"BVH to FBX for UE5"**
+5. Панель появится в боковой панели 3D Viewport во вкладке **BVH2FBX** (нажмите `N` для открытия боковой панели)
+
+> ⚠️ **НЕ скачивайте ZIP репозитория ("Source code")** — он не установится в Blender, потому что файл аддона находится внутри подпапки. Используйте **Blender Addon ZIP** из релиза.
+
+**Способ B — Установка из .py файла:**
+
+1. Скачайте `bvh_to_fbx_ue5_addon.py` из [Релизов](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases)
 2. Откройте Blender → **Правка** → **Настройки** → **Аддоны** → **Установить...**
 3. Выберите скачанный файл `.py`
 4. Включите аддон **"BVH to FBX for UE5"**
-5. Панель появится в боковой панели 3D Viewport во вкладке **BVH2FBX** (нажмите `N` для открытия боковой панели)
 
 ### Использование
 
