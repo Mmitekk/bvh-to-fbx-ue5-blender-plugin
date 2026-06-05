@@ -29,16 +29,16 @@ GITHUB_REPO = "Mmitekk/bvh-to-fbx-ue5-blender-plugin"
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 ADDON_FILENAME = "bvh_to_fbx_ue5_addon.py"
 
-CURRENT_VERSION = bl_info["version"]  # (3, 0, 0)
+CURRENT_VERSION = bl_info["version"]  # (3, 3, 0)
 
 
 def version_to_string(v):
-    """Convert version tuple to string like '3.0.0'."""
+    """Convert version tuple to string like '3.3.0'."""
     return ".".join(str(x) for x in v)
 
 
 def string_to_version(s):
-    """Convert version string like '3.0.0' to tuple (3, 0, 0)."""
+    """Convert version string like '3.3.0' to tuple (3, 3, 0)."""
     parts = s.strip().lstrip("v").split(".")
     result = []
     for p in parts:
@@ -52,11 +52,7 @@ def string_to_version(s):
 
 
 def fetch_github_releases():
-    """Fetch list of releases from GitHub API.
-
-    Returns:
-        list of dicts with keys: tag_name, name, published_at, assets, html_url
-    """
+    """Fetch list of releases from GitHub API."""
     ctx = ssl.create_default_context()
     try:
         req = urllib.request.Request(
@@ -76,7 +72,6 @@ def find_asset_url(release, filename):
     for asset in release.get("assets", []):
         if asset.get("name") == filename:
             return asset.get("browser_download_url") or asset.get("url")
-    # Fallback: try to get from source archive
     return None
 
 
@@ -97,19 +92,21 @@ def get_addon_install_path():
 # ============================================================================
 # BONE MAPPING: BVH bone names -> UE5 Quinn bone names
 # ============================================================================
+# IMPORTANT: Order matters for find_bvh_for_ue5() which returns first match.
+# We put the most specific/important mapping first to avoid duplicates winning.
 
 BVH_TO_UE5 = {
-    # Spine
+    # Spine (FIXED: Spine1->spine_02, Spine2->spine_03)
     'Hips': 'pelvis',
     'Spine': 'spine_01',
-    'Spine1': 'spine_01',
-    'Spine2': 'spine_02',
-    'Spine3': 'spine_03',
+    'Spine1': 'spine_02',
+    'Spine2': 'spine_03',
+    'Spine3': 'spine_04',
     'Chest': 'spine_04',
     # Neck & Head
     'Neck': 'neck_01',
-    'Neck1': 'neck_01',
-    'Neck2': 'neck_02',
+    'Neck1': 'neck_02',
+    'Neck2': 'neck_03',
     'Head': 'head',
     # Left Arm
     'LeftShoulder': 'clavicle_l',
@@ -161,15 +158,15 @@ BVH_TO_UE5 = {
     'RightHandPinky2': 'pinky_01_r',
     'RightHandPinky3': 'pinky_02_r',
     'RightHandPinky4': 'pinky_03_r',
-    # Left Leg
+    # Left Leg (FIXED: LeftLeg->calf_l, NOT thigh_l)
     'LeftUpLeg': 'thigh_l',
-    'LeftLeg': 'thigh_l',
+    'LeftLeg': 'calf_l',
     'LeftShin': 'calf_l',
     'LeftFoot': 'foot_l',
     'LeftToeBase': 'ball_l',
-    # Right Leg
+    # Right Leg (FIXED: RightLeg->calf_r, NOT thigh_r)
     'RightUpLeg': 'thigh_r',
-    'RightLeg': 'thigh_r',
+    'RightLeg': 'calf_r',
     'RightShin': 'calf_r',
     'RightFoot': 'foot_r',
     'RightToeBase': 'ball_r',
@@ -212,7 +209,11 @@ ALL_BVH_MAPS.update(MIXAMO_TO_UE5)
 # ============================================================================
 
 def find_bvh_for_ue5(bvh_bone_names, ue5_name):
-    """Find the best matching BVH bone name for a UE5 bone name."""
+    """Find the best matching BVH bone name for a UE5 bone name.
+
+    Returns the FIRST mapping that matches and exists in the BVH armature.
+    Since ALL_BVH_MAPS is ordered, more specific mappings come first.
+    """
     for bvh_name, mapped_ue5 in ALL_BVH_MAPS.items():
         if mapped_ue5 == ue5_name and bvh_name in bvh_bone_names:
             return bvh_name
@@ -225,6 +226,7 @@ def find_hips_bone(armature):
     for name in candidates:
         if name in armature.pose.bones:
             return armature.pose.bones[name]
+    # Fallback: find bone with many children (likely the hips)
     for pb in armature.pose.bones:
         if pb.parent is not None and len(pb.children) > 2:
             return pb
@@ -241,7 +243,7 @@ def get_bones_in_hierarchy_order(armature):
             return
         visited.add(pb.name)
         ordered.append(pb)
-        for child in pb.children:
+        for child in sorted(pb.children, key=lambda c: c.name):
             visit(child)
 
     for pb in armature.pose.bones:
@@ -251,26 +253,20 @@ def get_bones_in_hierarchy_order(armature):
     return ordered
 
 
-# ============================================================================
-# ROOT BONE HANDLING
-# ============================================================================
-
 def find_root_bone(armature):
-    """Find the root bone of the armature (topmost bone with no parent).
+    """Find the root bone (bone with no parent) in the armature.
 
-    IMPORTANT: This function does NOT modify the skeleton hierarchy.
-    It only finds the existing root bone for root motion animation.
-
-    Returns the name of the root bone, or None if not found.
+    Does NOT modify the skeleton - just finds an existing root bone.
+    Returns the bone name or None.
     """
-    # Check for known root bone names first
+    # Prefer bones named 'root' or 'Root'
     for candidate in ['root', 'Root']:
         if candidate in armature.pose.bones:
             pb = armature.pose.bones[candidate]
             if pb.parent is None:
                 return candidate
 
-    # Fall back to any bone that has no parent
+    # Otherwise, find any bone with no parent
     for pb in armature.pose.bones:
         if pb.parent is None:
             return pb.name
@@ -279,18 +275,27 @@ def find_root_bone(armature):
 
 
 # ============================================================================
-# RETARGETING ENGINE
+# RETARGETING ENGINE v3.3 — COMPLETE REWRITE
 # ============================================================================
+# Key fixes over v3.2:
+# 1. BVH rest pose captured from edit bones (pb.bone.matrix_local),
+#    NOT from animated first frame
+# 2. Bone mapping fixed: LeftLeg->calf_l, Spine1->spine_02, etc.
+# 3. Unmapped bone world rotation computed using local rest rotation,
+#    NOT world rest rotation (fixes hierarchy corruption)
+# 4. Root motion with automatic forward direction detection
+# 5. Animation applied directly to original armature (mesh stays bound)
+# 6. No skeleton modifications (no adding Root bone)
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     """Retarget animation from BVH armature to reference (UE5) armature.
 
-    Strategy: World-space rotation delta matching
+    Strategy: World-space rotation delta matching with proper rest pose handling.
     For each frame and each mapped bone:
-      1. Compute BVH bone's world rotation delta from rest pose
-      2. Apply same delta to UE5 bone's rest pose
+      1. Compute BVH bone's world rotation delta from EDIT MODE rest pose
+      2. Apply same delta to UE5 bone's EDIT MODE rest pose
       3. Convert to local rotation relative to parent's animated rotation
-    Root motion: extracted from BVH Hips world position displacement
+    Root motion: extracted from BVH Hips displacement with auto forward detection
 
     Args:
         bvh_armature: Blender armature with BVH animation
@@ -326,65 +331,84 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     # Find BVH Hips bone for root motion
     bvh_hips = find_hips_bone(bvh_armature)
 
+    # Find root bone in UE5 armature (DO NOT MODIFY SKELETON)
+    root_bone_name = find_root_bone(ref_armature)
+    if not root_bone_name:
+        return None, {"error": "No root bone found in reference armature"}
+
     # -------------------------------------------------------------------------
-    # Store REST POSE data
+    # Store REST POSE data from EDIT BONES
+    # This is the CRITICAL fix: we use pb.bone.matrix_local which gives
+    # the actual rest pose (edit mode) matrix, NOT the animated first frame.
     # -------------------------------------------------------------------------
-    bpy.context.view_layer.objects.active = ref_armature
-    bpy.ops.object.mode_set(mode='POSE')
-
-    # Reset to rest pose
-    for pb in ref_armature.pose.bones:
-        pb.rotation_mode = 'YZX'
-        pb.location = (0, 0, 0)
-        pb.rotation_euler = (0, 0, 0)
-        pb.scale = (1, 1, 1)
-
-    bpy.ops.pose.rot_clear()
-    bpy.ops.pose.scale_clear()
-    bpy.ops.pose.loc_clear()
-
-    # Get rest pose world matrices
-    ref_rest_world = {}
-    for pb in ref_armature.pose.bones:
-        ref_rest_world[pb.name] = ref_armature.convert_space(
-            pose_bone=pb,
-            matrix=mathutils.Matrix.Identity(4),
-            from_space='LOCAL',
-            to_space='WORLD',
-        )
-
-    # Store BVH rest pose world matrices
-    scene.frame_set(frame_start)
-    bpy.context.view_layer.update()
-
+    # BVH rest pose world matrices (from edit bones)
     bvh_rest_world = {}
     for pb in bvh_armature.pose.bones:
-        bvh_rest_world[pb.name] = pb.matrix.copy()
+        # pb.bone.matrix_local is the bone's rest matrix in armature-local space
+        # Multiply by armature's world matrix to get world-space rest pose
+        bvh_rest_world[pb.name] = (bvh_armature.matrix_world @ pb.bone.matrix_local).copy()
 
-    # Get BVH Hips rest world position for root motion baseline
+    # UE5 rest pose world matrices (from edit bones)
+    ref_rest_world = {}
+    for pb in ref_armature.pose.bones:
+        ref_rest_world[pb.name] = (ref_armature.matrix_world @ pb.bone.matrix_local).copy()
+
+    # UE5 rest LOCAL rotation matrices (relative to parent's rest)
+    # This is needed for unmapped bones to correctly compute their animated world rotation
+    ref_rest_local_rot = {}  # bone_name -> 3x3 rotation relative to parent rest
+    for pb in ref_armature.pose.bones:
+        if pb.parent:
+            parent_rest_world_3x3 = ref_rest_world[pb.parent.name].to_3x3()
+            bone_rest_world_3x3 = ref_rest_world[pb.name].to_3x3()
+            ref_rest_local_rot[pb.name] = parent_rest_world_3x3.inverted() @ bone_rest_world_3x3
+        else:
+            ref_rest_local_rot[pb.name] = ref_rest_world[pb.name].to_3x3()
+
+    # BVH Hips rest world position for root motion baseline
     bvh_hips_rest_pos = None
-    if bvh_hips:
-        bvh_hips_rest_pos = bvh_hips.matrix.translation.copy()
-
-    # Also get the UE5 pelvis rest position to scale root motion properly
-    ref_pelvis = ref_armature.pose.bones.get('pelvis')
-    ref_hips_rest_world = None
-    if ref_pelvis:
-        ref_hips_rest_world = ref_rest_world.get('pelvis', mathutils.Matrix.Identity(4)).translation.copy()
-
-    bpy.ops.object.mode_set(mode='OBJECT')
+    if bvh_hips and bvh_hips.name in bvh_rest_world:
+        bvh_hips_rest_pos = bvh_rest_world[bvh_hips.name].translation.copy()
 
     # -------------------------------------------------------------------------
-    # Find or add Root bone for UE5 root motion
+    # Detect forward direction from BVH Hips displacement
+    # The character should walk along UE5's forward direction.
+    # In Blender, UE5 characters typically face -Y.
+    # We compute the net walking direction from BVH and rotate
+    # the root motion to align with -Y.
     # -------------------------------------------------------------------------
-    root_bone_name = find_root_bone(ref_armature)
+    forward_rotation = mathutils.Matrix.Identity(4)
+    if bvh_hips and num_frames > 1:
+        # Sample first and last frames to get walking direction
+        scene.frame_set(frame_start)
+        bpy.context.view_layer.update()
+        start_pos = bvh_hips.matrix.translation.copy()
 
-    if not root_bone_name:
-        return None, {"error": "Failed to find Root bone in armature"}
+        scene.frame_set(frame_end)
+        bpy.context.view_layer.update()
+        end_pos = bvh_hips.matrix.translation.copy()
 
-    # Ensure rest world matrices include root bone
-    if root_bone_name not in ref_rest_world:
-        ref_rest_world[root_bone_name] = mathutils.Matrix.Identity(4)
+        walk_dir = end_pos - start_pos
+        walk_dir.z = 0  # Ignore vertical component
+
+        if walk_dir.length > 0.001:
+            walk_dir.normalize()
+            # UE5 forward in Blender is -Y
+            target_dir = mathutils.Vector((0, -1, 0))
+
+            # Compute rotation from walk_dir to target_dir
+            dot = walk_dir.dot(target_dir)
+            if dot < -0.9999:
+                # Nearly opposite: 180 degree rotation around Z
+                forward_rotation = mathutils.Matrix.Rotation(math.pi, 4, 'Z')
+            elif dot < 0.9999:
+                axis = walk_dir.cross(target_dir)
+                if axis.length > 0.0001:
+                    axis.normalize()
+                    angle = math.acos(max(-1.0, min(1.0, dot)))
+                    forward_rotation = mathutils.Matrix.Rotation(angle, 4, axis)
+
+            print(f"[BVH2FBX] Walk direction: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f})")
+            print(f"[BVH2FBX] Applied forward correction: {math.degrees(math.acos(max(-1.0, min(1.0, dot)))):.1f} degrees")
 
     # -------------------------------------------------------------------------
     # Create new animation action on reference armature
@@ -422,6 +446,9 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         else:
             unmapped_bones.append(pb.name)
 
+    print(f"[BVH2FBX] Mapped {len(mapped_bones)} bones, unmapped {len(unmapped_bones)}")
+    print(f"[BVH2FBX] Mapped: {mapped_bones}")
+
     # -------------------------------------------------------------------------
     # Main retargeting loop
     # -------------------------------------------------------------------------
@@ -431,32 +458,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         bpy.context.view_layer.update()
 
         # --- Root Motion ---
-        # Extract Hips displacement from BVH and apply to root bone.
-        # Key insight: BVH Hips displacement is in BVH world space.
-        # We only need the HORIZONTAL displacement (forward/lateral motion)
-        # and optionally vertical (for walking up/down).
-        # The displacement is relative to the BVH Hips rest position.
         root_pb = ref_armature.pose.bones.get(root_bone_name)
         if root_pb and bvh_hips:
             hips_world_pos = bvh_hips.matrix.translation
             if bvh_hips_rest_pos:
-                # Displacement in BVH world space
-                bvh_disp = hips_world_pos - bvh_hips_rest_pos
-
-                # Convert BVH displacement to UE5 scale.
-                # BVH typically uses centimeters, UE5 uses meters.
-                # The scale_factor handles this (default 1.0).
-                # We need to remap axes: BVH Y-up → UE5 Z-up
-                # In Blender after BVH import with axis_up='Y':
-                #   BVH X → Blender X  (lateral)
-                #   BVH Y → Blender Z  (up/height) 
-                #   BVH Z → Blender -Y (forward)
-                # But since Blender already handles the import rotation,
-                # the BVH armature's world matrix already accounts for this.
-                # So we can use the displacement as-is from Blender coordinates.
-                disp = bvh_disp * scale_factor
-
-                root_pb.location = disp
+                disp = hips_world_pos - bvh_hips_rest_pos
+                # Apply forward direction correction
+                disp_corrected = forward_rotation @ disp
+                root_pb.location = disp_corrected * scale_factor
             else:
                 root_pb.location = (0, 0, 0)
 
@@ -471,81 +480,77 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             root_pb.keyframe_insert(data_path='rotation_euler', frame=fi, group=root_bone_name)
 
         # --- Retarget each reference bone in hierarchy order ---
-        ref_animated_world = {}
-        ref_animated_world[root_bone_name] = mathutils.Matrix.Identity(4)
+        # Track animated world ROTATIONS (3x3) for correct parent-child computation
+        ref_animated_world_rot = {}
+
+        # Root bone's animated world rotation = its rest world rotation
+        # (root has identity or near-identity rotation, no rotation animation)
+        if root_bone_name in ref_rest_world:
+            ref_animated_world_rot[root_bone_name] = ref_rest_world[root_bone_name].to_3x3().copy()
+        else:
+            ref_animated_world_rot[root_bone_name] = mathutils.Matrix.Identity(3)
 
         for pb in get_bones_in_hierarchy_order(ref_armature):
             if pb.name == root_bone_name:
                 continue
 
             bvh_name = bone_map.get(pb.name)
+            parent_name = pb.parent.name if pb.parent else root_bone_name
+
+            # Get parent's animated world rotation
+            parent_rot = ref_animated_world_rot.get(parent_name, mathutils.Matrix.Identity(3))
 
             if bvh_name and bvh_name in bvh_armature.pose.bones:
                 # ---- MAPPED BONE: retarget from BVH ----
                 bvh_pb = bvh_armature.pose.bones[bvh_name]
 
-                # BVH bone's world rotation at this frame
+                # BVH bone's world rotation at this frame (animated)
                 bvh_world_rot = bvh_pb.matrix.to_3x3()
 
-                # BVH bone's rest world rotation
-                bvh_rest_rot_3x3 = bvh_rest_world.get(bvh_name,
+                # BVH bone's REST world rotation (from edit bones, not animated frame!)
+                bvh_rest_rot = bvh_rest_world.get(bvh_name,
                     mathutils.Matrix.Identity(4)).to_3x3()
 
-                # UE5 bone's rest world rotation
-                ref_rest_rot_3x3 = ref_rest_world.get(pb.name,
+                # UE5 bone's REST world rotation (from edit bones)
+                ref_rest_rot = ref_rest_world.get(pb.name,
                     mathutils.Matrix.Identity(4)).to_3x3()
 
-                # Rotation delta: how much BVH bone rotated from its rest
-                delta = bvh_world_rot @ bvh_rest_rot_3x3.inverted()
+                # Rotation delta: how much BVH bone rotated FROM ITS REST POSE
+                # This is the key fix: we use the actual rest pose, not frame_start
+                delta = bvh_world_rot @ bvh_rest_rot.inverted()
 
                 # Apply same delta to UE5 rest rotation
-                ue5_world_rot_3x3 = delta @ ref_rest_rot_3x3
+                desired_world_rot = delta @ ref_rest_rot
 
-                # Get parent's animated world rotation
-                parent_name = pb.parent.name if pb.parent else root_bone_name
-                parent_world = ref_animated_world.get(parent_name,
-                    mathutils.Matrix.Identity(4))
+                # Convert to local rotation (relative to animated parent)
+                local_rot = parent_rot.inverted() @ desired_world_rot
 
-                # Compute local rotation: local = parent_inv * world
-                parent_world_rot_3x3 = parent_world.to_3x3()
-                local_rot_3x3 = parent_world_rot_3x3.inverted() @ ue5_world_rot_3x3
-
-                # Convert to euler
-                local_euler = local_rot_3x3.to_euler('YZX')
+                # Set the pose bone rotation
+                local_euler = local_rot.to_euler('YZX')
                 pb.rotation_euler = local_euler
-
-                # Keep rest position for body bones
                 pb.location = (0, 0, 0)
 
-                # Compute animated world rotation for children
-                full_world_rot = parent_world_rot_3x3 @ local_rot_3x3
-                world_mat = mathutils.Matrix.Identity(4)
-                for i in range(3):
-                    for j in range(3):
-                        world_mat[i][j] = full_world_rot[i][j]
-                ref_animated_world[pb.name] = world_mat
+                # Store animated world rotation for children
+                ref_animated_world_rot[pb.name] = (parent_rot @ local_rot).copy()
 
             else:
                 # ---- UNMAPPED BONE: keep rest pose ----
                 pb.rotation_euler = (0, 0, 0)
                 pb.location = (0, 0, 0)
 
-                # Compute animated world for children
-                parent_name = pb.parent.name if pb.parent else root_bone_name
-                parent_world = ref_animated_world.get(parent_name,
-                    mathutils.Matrix.Identity(4))
+                # CRITICAL FIX: Use LOCAL rest rotation (relative to parent rest),
+                # NOT world rest rotation. Using world rest rotation here was
+                # breaking the hierarchy because it doesn't account for parent
+                # animation correctly.
+                #
+                # World rotation of unmapped bone = parent_animated_rot @ local_rest_rot
+                # NOT = parent_animated_rot @ bone_world_rest_rot
+                local_rest_rot = ref_rest_local_rot.get(pb.name,
+                    mathutils.Matrix.Identity(3))
 
-                rest_rot_3x3 = ref_rest_world.get(pb.name,
-                    mathutils.Matrix.Identity(4)).to_3x3()
+                ref_animated_world_rot[pb.name] = (parent_rot @ local_rest_rot).copy()
 
-                full_world_rot = parent_world.to_3x3() @ rest_rot_3x3
-                world_mat = mathutils.Matrix.Identity(4)
-                for i in range(3):
-                    for j in range(3):
-                        world_mat[i][j] = full_world_rot[i][j]
-                ref_animated_world[pb.name] = world_mat
-
-            # Keyframe
+            # Keyframe rotation and location
             pb.keyframe_insert(data_path='rotation_euler', frame=fi, group=pb.name)
             pb.keyframe_insert(data_path='location', frame=fi, group=pb.name)
 
@@ -559,6 +564,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         "fps": scene.render.fps,
         "has_root_motion": bvh_hips is not None,
         "root_bone_name": root_bone_name,
+        "forward_correction": "Yes" if forward_rotation != mathutils.Matrix.Identity(4) else "No",
     }
 
     return new_action, stats
@@ -570,23 +576,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
 class BVH2FBX_OT_convert(bpy.types.Operator):
     bl_idname = "bvh2fbx.convert"
-    bl_label = "Конвертировать BVH → FBX"
+    bl_label = "Конвертировать BVH в FBX"
     bl_description = "Импортировать BVH, заретаргетить на текущий скелет и экспортировать FBX для UE5"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         props = context.scene.bvh2fbx_props
-        if not props.bvh_filepath:
-            return False
-        # Accept if active object is armature OR if any armature exists in the scene
-        if context.active_object and context.active_object.type == 'ARMATURE':
-            return True
-        # Check if any armature exists in the scene
-        for obj in context.scene.objects:
-            if obj.type == 'ARMATURE':
-                return True
-        return False
+        return props.bvh_filepath and context.active_object and context.active_object.type == 'ARMATURE'
 
     def execute(self, context):
         props = context.scene.bvh2fbx_props
@@ -613,15 +610,6 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         ref_armature = None
         if props.use_selected_armature and context.active_object and context.active_object.type == 'ARMATURE':
             ref_armature = context.active_object
-        elif props.use_selected_armature:
-            # Active object is not armature — find armature in scene
-            for obj in context.scene.objects:
-                if obj.type == 'ARMATURE':
-                    ref_armature = obj
-                    break
-            if ref_armature is None:
-                self.report({'ERROR'}, "В сцене нет арматуры! Импортируйте скелет UE5 первым.")
-                return {'CANCELLED'}
         else:
             for obj in context.scene.objects:
                 if obj.type == 'ARMATURE':
@@ -632,6 +620,11 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
             self.report({'ERROR'}, "В сцене нет арматуры! Импортируйте скелет UE5 первым.")
             return {'CANCELLED'}
 
+        # Store original action to restore if needed
+        orig_action = None
+        if ref_armature.animation_data and ref_armature.animation_data.action:
+            orig_action = ref_armature.animation_data.action
+
         # Step 1: Import BVH using Blender's built-in importer
         self.report({'INFO'}, "Импорт BVH файла...")
         try:
@@ -640,8 +633,8 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
                 filepath=props.bvh_filepath,
                 target='ARMATURE',
                 rotate_mode='NATIVE',
-                axis_forward='-Y',
-                axis_up='Z',
+                axis_forward='-Z',
+                axis_up='Y',
             )
         except Exception as e:
             self.report({'ERROR'}, f"Ошибка импорта BVH: {e}")
@@ -660,17 +653,12 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
 
         self.report({'INFO'}, f"BVH импортирован: {bvh_armature.name} ({len(bvh_armature.pose.bones)} костей)")
 
-        # Step 2: Retarget animation DIRECTLY onto the reference armature
-        # (NOT a duplicate — so the mesh deforms with the animation)
+        # Step 2: Retarget animation DIRECTLY to original armature
+        # (No duplication - mesh stays bound to original armature)
         bvh_action = bvh_armature.animation_data.action if bvh_armature.animation_data else None
         frame_count = int(bvh_action.frame_range[1] - bvh_action.frame_range[0] + 1) if bvh_action else 0
 
         self.report({'INFO'}, f"Ретаргетинг BVH ({len(bvh_armature.pose.bones)} костей, {frame_count} кадров)...")
-
-        # Remember the original action (if any) so we can restore on error
-        orig_action = None
-        if ref_armature.animation_data and ref_armature.animation_data.action:
-            orig_action = ref_armature.animation_data.action
 
         try:
             action, stats = retarget_animation(
@@ -681,7 +669,6 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         except Exception as e:
             import traceback
             self.report({'ERROR'}, f"Ошибка ретаргетинга: {e}\n{traceback.format_exc()}")
-            # Clean up BVH armature
             bpy.ops.object.select_all(action='DESELECT')
             bvh_armature.select_set(True)
             bpy.ops.object.delete()
@@ -693,7 +680,6 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         if action is None:
             error = stats.get('error', 'Unknown error')
             self.report({'ERROR'}, f"Ретаргетинг не удался: {error}")
-            # Clean up BVH armature
             bpy.ops.object.select_all(action='DESELECT')
             bvh_armature.select_set(True)
             bpy.ops.object.delete()
@@ -704,16 +690,10 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         bvh_armature.select_set(True)
         bpy.ops.object.delete()
 
-        # Step 4: Make reference armature active (with animation now applied)
+        # Step 4: Make reference armature the active object
         bpy.ops.object.select_all(action='DESELECT')
         ref_armature.select_set(True)
         context.view_layer.objects.active = ref_armature
-
-        # Also select the mesh objects parented to this armature
-        # so they are included in FBX export
-        for obj in context.scene.objects:
-            if obj.type == 'MESH' and obj.parent == ref_armature:
-                obj.select_set(True)
 
         # Step 5: Export FBX if output path specified
         if props.output_filepath and props.auto_export:
@@ -726,7 +706,7 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
                     apply_scale_options='FBX_SCALE_NONE',
                     axis_forward='-Z',
                     axis_up='Z',
-                    object_types={'ARMATURE', 'MESH'},
+                    object_types={'ARMATURE'},
                     use_armature_deform_only=False,
                     add_leaf_bones=False,
                     primary_bone_axis='Y',
@@ -747,10 +727,12 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         total = stats.get('total_bones', 0)
         root_motion = "Да" if stats.get('has_root_motion') else "Нет"
         root_name = stats.get('root_bone_name', '?')
+        fwd_corr = stats.get('forward_correction', '?')
         self.report({'INFO'},
                      f"Готово! Костей: {total}, Сопоставлено: {mapped}, "
                      f"Кадров: {stats.get('frame_count', 0)}, "
-                     f"Root Motion: {root_motion} (bone: {root_name})")
+                     f"Root Motion: {root_motion} (bone: {root_name}), "
+                     f"Коррекция направления: {fwd_corr}")
 
         return {'FINISHED'}
 
@@ -810,14 +792,12 @@ class BVH2FBX_OT_check_updates(bpy.types.Operator):
         for rel in releases:
             tag = rel.get("tag_name", "")
             name = rel.get("name", tag)
-            # Check if this release has our addon file as asset
             has_asset = any(a.get("name") == ADDON_FILENAME for a in rel.get("assets", []))
             if has_asset:
                 label = f"{tag} — {name}"
                 enum_items.append((tag, label, f"Release {tag}"))
 
         if not enum_items:
-            # Also try source code
             for rel in releases:
                 tag = rel.get("tag_name", "")
                 name = rel.get("name", tag)
@@ -829,7 +809,6 @@ class BVH2FBX_OT_check_updates(bpy.types.Operator):
             self.report({'INFO'}, "Релизы не найдены на GitHub.")
             return {'CANCELLED'}
 
-        # Store releases data in a collection property
         props.available_versions.clear()
         for tag, label, desc in enum_items:
             item = props.available_versions.add()
@@ -837,7 +816,6 @@ class BVH2FBX_OT_check_updates(bpy.types.Operator):
             item.label = label
             item.description = desc
 
-        # Find latest version
         latest_tag = enum_items[0][0]
         latest_ver = string_to_version(latest_tag)
         current = CURRENT_VERSION
@@ -876,7 +854,6 @@ class BVH2FBX_OT_install_update(bpy.types.Operator):
 
         self.report({'INFO'}, f"Загрузка версии {target_tag}...")
 
-        # Fetch releases again to get asset URLs
         releases = fetch_github_releases()
         target_release = None
         for rel in releases:
@@ -888,30 +865,25 @@ class BVH2FBX_OT_install_update(bpy.types.Operator):
             self.report({'ERROR'}, f"Релиз {target_tag} не найден на GitHub")
             return {'CANCELLED'}
 
-        # Try to find the addon .py file as a release asset
         asset_url = find_asset_url(target_release, ADDON_FILENAME)
 
         if not asset_url:
-            # Fallback: download zip of source and extract the addon file
             zipball_url = target_release.get("zipball_url")
             if not zipball_url:
                 self.report({'ERROR'}, f"Не найден файл {ADDON_FILENAME} в релизе {target_tag}")
                 return {'CANCELLED'}
 
-            # Download source archive
             try:
                 tmp_dir = tempfile.mkdtemp(prefix="bvh2fbx_update_")
                 zip_path = os.path.join(tmp_dir, "source.zip")
                 self.report({'INFO'}, "Загрузка архива исходного кода...")
                 download_file(zipball_url, zip_path)
 
-                # Extract the addon file from the archive
                 import zipfile
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     addon_found = False
                     for info in zf.infolist():
                         if info.filename.endswith(ADDON_FILENAME) and not info.is_dir():
-                            # Extract just this file
                             with zf.open(info) as src, open(os.path.join(tmp_dir, ADDON_FILENAME), 'wb') as dst:
                                 dst.write(src.read())
                             addon_found = True
@@ -921,42 +893,34 @@ class BVH2FBX_OT_install_update(bpy.types.Operator):
                         shutil.rmtree(tmp_dir, ignore_errors=True)
                         return {'CANCELLED'}
 
-                asset_url = None  # Flag that we already have the file locally
+                asset_url = None
 
             except Exception as e:
                 self.report({'ERROR'}, f"Ошибка загрузки архива: {e}")
                 return {'CANCELLED'}
 
-        # Download the addon file
         current_addon_path = get_addon_install_path()
         backup_path = current_addon_path + ".backup"
         new_addon_path = current_addon_path + ".new"
 
         try:
             if asset_url:
-                # Download the standalone .py file from release assets
                 tmp_dir = tempfile.mkdtemp(prefix="bvh2fbx_update_")
                 tmp_file = os.path.join(tmp_dir, ADDON_FILENAME)
                 self.report({'INFO'}, f"Скачивание {ADDON_FILENAME}...")
                 download_file(asset_url, tmp_file)
                 shutil.copy2(tmp_file, new_addon_path)
             else:
-                # File was already extracted from zip
                 extracted = os.path.join(tmp_dir, ADDON_FILENAME)
                 shutil.copy2(extracted, new_addon_path)
 
-            # Backup current version
             shutil.copy2(current_addon_path, backup_path)
-
-            # Replace current addon with new version
             shutil.move(new_addon_path, current_addon_path)
 
             self.report({'INFO'}, f"Обновление до {target_tag} установлено! Перезапустите Blender для применения.")
-
             props.update_status = f"Обновлено до {target_tag}! Перезапустите Blender."
 
         except Exception as e:
-            # Restore backup if something went wrong
             if os.path.exists(backup_path):
                 try:
                     shutil.move(backup_path, current_addon_path)
@@ -965,12 +929,10 @@ class BVH2FBX_OT_install_update(bpy.types.Operator):
             self.report({'ERROR'}, f"Ошибка установки обновления: {e}")
             return {'CANCELLED'}
         finally:
-            # Cleanup
             if 'tmp_dir' in locals():
                 shutil.rmtree(tmp_dir, ignore_errors=True)
             if os.path.exists(new_addon_path):
                 os.remove(new_addon_path)
-            # Keep backup for safety, remove old backups after successful update
             if os.path.exists(backup_path) and props.update_status.startswith("Обновлено"):
                 try:
                     os.remove(backup_path)
@@ -1007,7 +969,7 @@ class BVH2FBX_Properties(bpy.types.PropertyGroup):
 
     scale_factor: bpy.props.FloatProperty(
         name="Масштаб Root Motion",
-        description="Масштабный коэффициент для Root Motion (1.0 = без изменения, 0.01 = BVH cm → UE5 m)",
+        description="Масштабный коэффициент для Root Motion (1.0 = без изменения, 0.01 = BVH cm в UE5 m)",
         default=1.0,
         min=0.0001,
         max=100.0,
@@ -1046,7 +1008,7 @@ class BVH2FBX_Properties(bpy.types.PropertyGroup):
 # ============================================================================
 
 class BVH2FBX_PT_main(bpy.types.Panel):
-    bl_label = "BVH → FBX для UE5"
+    bl_label = "BVH в FBX для UE5"
     bl_idname = "BVH2FBX_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1086,116 +1048,52 @@ class BVH2FBX_PT_main(bpy.types.Panel):
                     armature = obj
                     break
 
+        box = layout.box()
+        box.label(text="Скелет UE5 (референс)", icon='ARMATURE_DATA')
         if armature:
-            box = layout.box()
-            box.label(text=f"Скелет: {armature.name}", icon='ARMATURE_DATA')
-            bone_count = len(armature.data.bones)
-            has_pelvis = 'pelvis' in armature.pose.bones
-            has_root = 'root' in armature.pose.bones or 'Root' in armature.pose.bones
-            skeleton_type = "UE5 Quinn" if has_pelvis else "Другой"
-            box.label(text=f"  Тип: {skeleton_type}")
-            box.label(text=f"  Костей: {bone_count}")
-            if has_root:
-                root_name = 'root' if 'root' in armature.pose.bones else 'Root'
-                box.label(text=f"  Root bone: {root_name}", icon='BONE_DATA')
-
-            # Count mapped bones
-            if props.bvh_filepath and os.path.isfile(props.bvh_filepath):
-                try:
-                    with open(props.bvh_filepath, 'r', encoding='utf-8', errors='replace') as f:
-                        content = f.read()
-                    import re
-                    bvh_bones = set(re.findall(r'(?:ROOT|JOINT)\s+(\S+)', content))
-                    mapped = 0
-                    for bvh_name, ue5_name in ALL_BVH_MAPS.items():
-                        if bvh_name in bvh_bones and ue5_name in armature.pose.bones:
-                            mapped += 1
-                    box.label(text=f"  Сопоставлено: ~{mapped} костей", icon='GROUP_BONE')
-                except:
-                    pass
+            box.label(text=f"Арматура: {armature.name}", icon='BONE_DATA')
+            root_name = find_root_bone(armature)
+            if root_name:
+                box.label(text=f"Root кость: {root_name}", icon='CON_ROTLIKE')
+            else:
+                box.label(text="Root кость: НЕ НАЙДЕНА!", icon='ERROR')
         else:
-            box = layout.box()
-            box.label(text="Скелет НЕ НАЙДЕН!", icon='ERROR')
-            box.label(text="  Импортируйте FBX скелет UE5")
+            box.label(text="Арматура НЕ выбрана!", icon='ERROR')
 
-        # Output
-        box = layout.box()
-        box.label(text="Выходной FBX", icon='EXPORT')
-        box.prop(props, "output_filepath", text="")
-
-        # Settings
-        box = layout.box()
-        box.label(text="Настройки", icon='SETTINGS')
-        box.prop(props, "scale_factor")
         box.prop(props, "use_selected_armature")
+
+        # Output settings
+        box = layout.box()
+        box.label(text="Выходной FBX", icon='FILE_TICK')
+        box.prop(props, "output_filepath", text="")
         box.prop(props, "auto_export")
 
-        # Scale hint
-        if props.scale_factor == 0.01:
-            box.label(text="BVH cm → UE5 m", icon='INFO')
-        elif props.scale_factor == 1.0:
-            box.label(text="Без масштабирования", icon='INFO')
+        # Root motion scale
+        box = layout.box()
+        box.label(text="Root Motion", icon='CON_LOCLIKE')
+        box.prop(props, "scale_factor")
 
         # Convert button
         layout.separator()
-        layout.scale_y = 1.5
-        layout.operator("bvh2fbx.convert", icon='PLAY')
+        can_convert = (
+            props.bvh_filepath
+            and os.path.isfile(props.bvh_filepath)
+            and armature is not None
+        )
+        row = layout.row(align=True)
+        row.enabled = can_convert
+        row.scale_y = 1.5
+        row.operator("bvh2fbx.convert", icon='PLAY')
 
-        # Quick info about BVH file
-        if props.bvh_filepath and os.path.isfile(props.bvh_filepath):
-            try:
-                with open(props.bvh_filepath, 'r', encoding='utf-8', errors='replace') as f:
-                    first_line = f.readline().strip()
-                if first_line.upper() == 'HIERARCHY':
-                    box = layout.box()
-                    box.label(text="Информация о BVH:", icon='INFO')
-                    import re
-                    with open(props.bvh_filepath, 'r', encoding='utf-8', errors='replace') as f:
-                        content = f.read()
-                    bvh_bones = set(re.findall(r'(?:ROOT|JOINT)\s+(\S+)', content))
-                    frames_match = re.search(r'Frames:\s+(\d+)', content)
-                    time_match = re.search(r'Frame\s+Time:\s+([\d.]+)', content)
-
-                    nframes = int(frames_match.group(1)) if frames_match else 0
-                    ftime = float(time_match.group(1)) if time_match else 0
-                    fps = 1.0 / ftime if ftime > 0 else 30
-
-                    box.label(text=f"  Костей: {len(bvh_bones)}")
-                    box.label(text=f"  Кадров: {nframes}")
-                    box.label(text=f"  FPS: {fps:.1f}")
-                    box.label(text=f"  Длительность: {nframes / fps:.2f}с")
-
-                    has_root_pos = 'Xposition' in content and 'Yposition' in content
-                    box.label(text=f"  Root Motion: {'Да' if has_root_pos else 'Нет'}")
-            except:
-                pass
+        # Version info
+        layout.separator()
+        box = layout.box()
+        box.label(text=f"Версия: {version_to_string(CURRENT_VERSION)}", icon='INFO')
 
 
-class BVH2FBX_UL_versions(bpy.types.UIList):
-    """UI List for displaying available versions."""
-    bl_idname = "BVH2FBX_UL_versions"
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            ver = string_to_version(item.tag)
-            is_newer = ver > CURRENT_VERSION
-            is_current = ver == CURRENT_VERSION
-            if is_current:
-                icon_val = 'CHECKMARK'
-            elif is_newer:
-                icon_val = 'SOLO_ON'
-            else:
-                icon_val = 'SOLO_OFF'
-            layout.label(text=item.label, icon=icon_val)
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text=item.tag)
-
-
-class BVH2FBX_PT_update(bpy.types.Panel):
-    """Panel for the update system."""
-    bl_label = "Обновление плагина"
-    bl_idname = "BVH2FBX_PT_update"
+class BVH2FBX_PT_updates(bpy.types.Panel):
+    bl_label = "Обновления"
+    bl_idname = "BVH2FBX_PT_updates"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "BVH2FBX"
@@ -1206,70 +1104,24 @@ class BVH2FBX_PT_update(bpy.types.Panel):
         layout = self.layout
         props = context.scene.bvh2fbx_props
 
-        # Current version
-        box = layout.box()
-        box.label(text=f"Текущая версия: {version_to_string(CURRENT_VERSION)}", icon='INFO')
-        box.label(text=f"Репозиторий: {GITHUB_REPO}", icon='URL')
-
         # Status
-        if props.update_status:
-            status_icon = 'ERROR' if 'Ошибка' in props.update_status else 'INFO'
-            if 'Доступно обновление' in props.update_status:
-                status_icon = 'COLORSET_13_VEC'
-            elif 'Установлена последняя' in props.update_status:
-                status_icon = 'CHECKMARK'
-            elif 'Обновлено' in props.update_status:
-                status_icon = 'CHECKMARK'
-            box.label(text=props.update_status, icon=status_icon)
+        layout.label(text=props.update_status, icon='INFO')
 
-        # Check for updates button
-        layout.separator()
-        row = layout.row(align=True)
-        row.scale_y = 1.2
-        row.operator("bvh2fbx.check_updates", text="Проверить обновления", icon='FILE_REFRESH')
+        # Check updates button
+        layout.operator("bvh2fbx.check_updates", icon='URL')
 
-        # Version selector
+        # Version list
         if len(props.available_versions) > 0:
-            layout.separator()
-
             layout.template_list(
-                "BVH2FBX_UL_versions",
-                "",
-                props,
-                "available_versions",
-                props,
-                "selected_version_index",
-                rows=5,
+                "UI_UL_list", "bvh2fbx_versions",
+                props, "available_versions",
+                props, "selected_version_index",
+                rows=3,
             )
 
             # Install button
-            if 0 <= props.selected_version_index < len(props.available_versions):
-                selected = props.available_versions[props.selected_version_index]
-                selected_ver = string_to_version(selected.tag)
-                if selected_ver > CURRENT_VERSION:
-                    layout.separator()
-                    layout.scale_y = 1.5
-                    layout.operator("bvh2fbx.install_update",
-                                    text=f"Установить {selected.tag}",
-                                    icon='IMPORT')
-                elif selected_ver == CURRENT_VERSION:
-                    layout.separator()
-                    layout.scale_y = 1.2
-                    layout.operator("bvh2fbx.install_update",
-                                    text=f"Переустановить {selected.tag}",
-                                    icon='FILE_REFRESH')
-                else:
-                    layout.separator()
-                    layout.scale_y = 1.2
-                    layout.operator("bvh2fbx.install_update",
-                                    text=f"Откатить до {selected.tag}",
-                                    icon='LOOP_BACK')
-
-        # Note about restart
-        layout.separator()
-        note_box = layout.box()
-        note_box.label(text="Примечание: после установки требуется", icon='INFO')
-        note_box.label(text="перезапуск Blender для применения обновления")
+            row = layout.row()
+            row.operator("bvh2fbx.install_update", icon='FILE_REFRESH')
 
 
 # ============================================================================
@@ -1278,14 +1130,13 @@ class BVH2FBX_PT_update(bpy.types.Panel):
 
 classes = (
     BVH2FBX_VersionItem,
-    BVH2FBX_UL_versions,
     BVH2FBX_Properties,
     BVH2FBX_OT_convert,
     BVH2FBX_OT_import_skeleton,
     BVH2FBX_OT_check_updates,
     BVH2FBX_OT_install_update,
     BVH2FBX_PT_main,
-    BVH2FBX_PT_update,
+    BVH2FBX_PT_updates,
 )
 
 
