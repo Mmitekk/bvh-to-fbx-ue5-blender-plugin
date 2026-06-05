@@ -28,3 +28,29 @@ Stage Summary:
 - Output: Quinn_ElderlyWalk_Fwd.fbx (1,451,462 bytes)
 - All 7 validation checks passed
 - Script: /home/z/my-project/python/bvh_to_fbx_ue5.py
+
+---
+Task ID: 2
+Agent: Main Agent (continuation)
+Task: Fix UE5 FBX import compatibility and create Blender Add-on
+
+Work Log:
+- Ran v5 converter and verified all 7 checks pass
+- Deep-compared output FBX with reference TP_Echo_Walk_Fwd.FBX (which UE5 imports correctly)
+- Found 2 CRITICAL issues causing UE5 import failure:
+  1. AnimationCurve tangent format: KeyVer=4008 (per-key) vs UE5 expects KeyVer=4009 (per-curve)
+  2. Root bone NodeAttribute type: 'Null' vs UE5 expects 'Root' with TypeFlags=Null,Skeleton,Root
+- Fixed AnimationCurve format: KeyVer=4009, KeyAttrFlags=0x2108, KeyAttrDataFloat=4 floats, KeyAttrRefCount=1 int
+- Fixed Root NodeAttribute: type='Root', TypeFlags=['Null','Skeleton','Root']
+- Verified all format fields now match reference FBX exactly
+- Created Blender Add-on plugin: bvh_to_fbx_ue5_addon.py
+- Add-on features: BVH import, retargeting to selected armature, FBX export for UE5, UI panel in sidebar
+- Output file: ElderlyWalk_Quinn_v6.fbx (1,409,832 bytes, 1376.8 KB)
+
+Stage Summary:
+- Fixed the 2 critical FBX format issues that prevented UE5 import
+- AnimationCurve format now matches UE5's expected KeyVer=4009 per-curve tangent format
+- Root NodeAttribute now matches UE5's expected Root type with proper TypeFlags
+- Created standalone Python converter script (bvh_to_fbx_ue5.py) with all fixes
+- Created Blender Add-on (bvh_to_fbx_ue5_addon.py) for GUI-based workflow
+- Files: /home/z/my-project/python/bvh_to_fbx_ue5.py, /home/z/my-project/download/bvh_to_fbx_ue5_addon.py

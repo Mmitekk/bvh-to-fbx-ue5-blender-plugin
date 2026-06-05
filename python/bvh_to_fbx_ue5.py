@@ -969,11 +969,12 @@ class FBXWriter:
             bd = skeleton[bname]
             btype = bd['type']
             if btype == 'Root':
+                # UE5 expects Root NodeAttribute with TypeFlags=Null,Skeleton,Root
                 obj_children.append(('NodeAttribute',
                     [('L', attr_id[bname]),
                      ('S', f'{bname}\x00\x01NodeAttribute'),
-                     ('S', 'Null')],
-                    [('TypeFlags', [('S', 'Null')])]))
+                     ('S', 'Root')],
+                    [('TypeFlags', [('S', 'Null'), ('S', 'Skeleton'), ('S', 'Root')])]))
             else:
                 obj_children.append(('NodeAttribute',
                     [('L', attr_id[bname]),
@@ -1084,15 +1085,20 @@ class FBXWriter:
                     kv = [float(f[ai]) for f in data]
                     kt = [int(i * ft) for i in range(nf)]
 
+                    # KeyVer=4009: per-curve constant tangent interpolation
+                    # UE5 expects this format (not per-key 4008)
+                    # KeyAttrFlags: 1 int per curve = 0x2108 = auto tangent (matching UE5 export)
+                    # KeyAttrDataFloat: 4 floats per curve (tangent data)
+                    # KeyAttrRefCount: 1 int per curve = nf
                     obj_children.append(('AnimationCurve',
-                        [('L', cvid), ('S', 'AnimCurve'), ('S', '')],
+                        [('L', cvid), ('S', ''), ('S', '')],
                         [('Default', [('D', 0.0)]),
-                         ('KeyVer', [('I', 4008)]),
+                         ('KeyVer', [('I', 4009)]),
                          ('KeyTime', [('l', kt)]),
                          ('KeyValueFloat', [('f', kv)]),
-                         ('KeyAttrFlags', [('i', [0x00080010] * nf)]),
-                         ('KeyAttrDataFloat', [('i', [0, 0, 0, 0] * nf)]),
-                         ('KeyAttrRefCount', [('i', [1] * nf)]),
+                         ('KeyAttrFlags', [('i', [0x2108])]),
+                         ('KeyAttrDataFloat', [('f', [0.0, 0.0, 0.0, 0.0])]),
+                         ('KeyAttrRefCount', [('i', [nf])]),
                         ]))
 
         self._w_record('Objects', [], obj_children)
