@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v3",
-    "version": (3, 1, 0),
+    "version": (3, 2, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -382,6 +382,12 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     if bvh_hips:
         bvh_hips_rest_pos = bvh_hips.matrix.translation.copy()
 
+    # Also get the UE5 pelvis rest position to scale root motion properly
+    ref_pelvis = ref_armature.pose.bones.get('pelvis')
+    ref_hips_rest_world = None
+    if ref_pelvis:
+        ref_hips_rest_world = ref_rest_world.get('pelvis', mathutils.Matrix.Identity(4)).translation.copy()
+
     bpy.ops.object.mode_set(mode='OBJECT')
 
     # -------------------------------------------------------------------------
@@ -441,11 +447,31 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         bpy.context.view_layer.update()
 
         # --- Root Motion ---
+        # Extract Hips displacement from BVH and apply to root bone.
+        # Key insight: BVH Hips displacement is in BVH world space.
+        # We only need the HORIZONTAL displacement (forward/lateral motion)
+        # and optionally vertical (for walking up/down).
+        # The displacement is relative to the BVH Hips rest position.
         root_pb = ref_armature.pose.bones.get(root_bone_name)
         if root_pb and bvh_hips:
             hips_world_pos = bvh_hips.matrix.translation
             if bvh_hips_rest_pos:
-                disp = (hips_world_pos - bvh_hips_rest_pos) * scale_factor
+                # Displacement in BVH world space
+                bvh_disp = hips_world_pos - bvh_hips_rest_pos
+
+                # Convert BVH displacement to UE5 scale.
+                # BVH typically uses centimeters, UE5 uses meters.
+                # The scale_factor handles this (default 1.0).
+                # We need to remap axes: BVH Y-up → UE5 Z-up
+                # In Blender after BVH import with axis_up='Y':
+                #   BVH X → Blender X  (lateral)
+                #   BVH Y → Blender Z  (up/height) 
+                #   BVH Z → Blender -Y (forward)
+                # But since Blender already handles the import rotation,
+                # the BVH armature's world matrix already accounts for this.
+                # So we can use the displacement as-is from Blender coordinates.
+                disp = bvh_disp * scale_factor
+
                 root_pb.location = disp
             else:
                 root_pb.location = (0, 0, 0)
@@ -650,54 +676,62 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
 
         self.report({'INFO'}, f"BVH импортирован: {bvh_armature.name} ({len(bvh_armature.pose.bones)} костей)")
 
-        # Step 2: Duplicate the reference armature for retargeting
-        bpy.ops.object.select_all(action='DESELECT')
-        ref_armature.select_set(True)
-        context.view_layer.objects.active = ref_armature
-        bpy.ops.object.duplicate()
-        retarget_armature = context.active_object
-        retarget_armature.name = ref_armature.name + "_retargeted"
-
-        # Remove existing animation from duplicate
-        if retarget_armature.animation_data:
-            retarget_armature.animation_data_clear()
-
-        # Step 3: Retarget animation
+        # Step 2: Retarget animation DIRECTLY onto the reference armature
+        # (NOT a duplicate — so the mesh deforms with the animation)
         bvh_action = bvh_armature.animation_data.action if bvh_armature.animation_data else None
         frame_count = int(bvh_action.frame_range[1] - bvh_action.frame_range[0] + 1) if bvh_action else 0
 
         self.report({'INFO'}, f"Ретаргетинг BVH ({len(bvh_armature.pose.bones)} костей, {frame_count} кадров)...")
 
+        # Remember the original action (if any) so we can restore on error
+        orig_action = None
+        if ref_armature.animation_data and ref_armature.animation_data.action:
+            orig_action = ref_armature.animation_data.action
+
         try:
             action, stats = retarget_animation(
                 bvh_armature,
-                retarget_armature,
+                ref_armature,
                 scale_factor=props.scale_factor
             )
         except Exception as e:
             import traceback
             self.report({'ERROR'}, f"Ошибка ретаргетинга: {e}\n{traceback.format_exc()}")
+            # Clean up BVH armature
             bpy.ops.object.select_all(action='DESELECT')
             bvh_armature.select_set(True)
             bpy.ops.object.delete()
+            # Restore original action
+            if orig_action and ref_armature.animation_data:
+                ref_armature.animation_data.action = orig_action
             return {'CANCELLED'}
 
         if action is None:
             error = stats.get('error', 'Unknown error')
             self.report({'ERROR'}, f"Ретаргетинг не удался: {error}")
+            # Clean up BVH armature
+            bpy.ops.object.select_all(action='DESELECT')
+            bvh_armature.select_set(True)
+            bpy.ops.object.delete()
             return {'CANCELLED'}
 
-        # Step 4: Clean up - remove BVH armature
+        # Step 3: Clean up - remove BVH armature
         bpy.ops.object.select_all(action='DESELECT')
         bvh_armature.select_set(True)
         bpy.ops.object.delete()
 
-        # Step 5: Make retargeted armature the active one
+        # Step 4: Make reference armature active (with animation now applied)
         bpy.ops.object.select_all(action='DESELECT')
-        retarget_armature.select_set(True)
-        context.view_layer.objects.active = retarget_armature
+        ref_armature.select_set(True)
+        context.view_layer.objects.active = ref_armature
 
-        # Step 6: Export FBX if output path specified
+        # Also select the mesh objects parented to this armature
+        # so they are included in FBX export
+        for obj in context.scene.objects:
+            if obj.type == 'MESH' and obj.parent == ref_armature:
+                obj.select_set(True)
+
+        # Step 5: Export FBX if output path specified
         if props.output_filepath and props.auto_export:
             self.report({'INFO'}, f"Экспорт FBX: {props.output_filepath}...")
             try:
@@ -708,7 +742,7 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
                     apply_scale_options='FBX_SCALE_NONE',
                     axis_forward='-Z',
                     axis_up='Z',
-                    object_types={'ARMATURE'},
+                    object_types={'ARMATURE', 'MESH'},
                     use_armature_deform_only=False,
                     add_leaf_bones=False,
                     primary_bone_axis='Y',
