@@ -54,3 +54,28 @@ Stage Summary:
 - Created standalone Python converter script (bvh_to_fbx_ue5.py) with all fixes
 - Created Blender Add-on (bvh_to_fbx_ue5_addon.py) for GUI-based workflow
 - Files: /home/z/my-project/python/bvh_to_fbx_ue5.py, /home/z/my-project/download/bvh_to_fbx_ue5_addon.py
+---
+Task ID: 1
+Agent: main
+Task: Rewrite BVH→FBX retargeting engine to fix broken skeleton and sideways movement
+
+Work Log:
+- Read and analyzed v3.2.0 plugin code (bvh_to_fbx_ue5_addon.py)
+- Identified 6 critical bugs in retargeting logic
+- Completely rewrote the retargeting engine with proper rest pose handling
+- Fixed bone mapping (LeftLeg→calf_l, Spine1→spine_02, Spine2→spine_03)
+- Fixed BVH rest pose capture (using pb.bone.matrix_local instead of animated frame)
+- Fixed unmapped bone world rotation (using local rest rot instead of world rest rot)
+- Added automatic forward direction detection for root motion
+- Changed to animate original armature directly (no duplication)
+- Removed skeleton modification logic (no adding Root bone)
+- Version bumped to 3.3.0 (initially), then 3.4.0
+- Attempted GitHub push but token is read-only (no write permissions)
+
+Stage Summary:
+- Complete rewrite of retarget_animation() function
+- File saved at /home/z/my-project/download/bvh_to_fbx_ue5_addon.py
+- Also copied to /home/z/my-project/download/bvh-to-fbx-ue5-blender-plugin/bvh_to_fbx_ue5_addon.py
+- Local git commit created (v3.3.0)
+- GitHub push FAILED - token REDACTED_TOKEN is read-only
+- User needs to provide a new token with Contents:Write and Releases:Write permissions
