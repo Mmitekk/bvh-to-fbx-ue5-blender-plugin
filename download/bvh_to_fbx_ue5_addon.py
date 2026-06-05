@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v3",
-    "version": (4, 1, 0),
+    "version": (5, 0, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -275,63 +275,57 @@ def find_root_bone(armature):
 
 
 # ============================================================================
-# RETARGETING ENGINE v4.1 — LOCAL DELTA APPROACH
+# RETARGETING ENGINE v5.0 — ARMATURE-LOCAL DELTA WITH HIERARCHICAL POSE
 # ============================================================================
-# v4.0 BUG: armature-local delta transfer breaks when BVH and UE5 bones
-# have different rest orientations. The delta computed in armature-local
-# space includes the parent chain's effect. When decomposing into local
-# rotation relative to UE5 parent, the different rest poses cause errors
-# that accumulate down the hierarchy.
+# v4.1 BUG: The local delta approach conjugates bvh_local_delta by
+# ue5_rest_local, which is mathematically incorrect because:
+#   - bvh_local_delta is expressed in BVH PARENT-LOCAL space
+#   - ue5_rest_local is in UE5 PARENT-LOCAL space
+#   - These differ when BVH and UE5 rest poses differ
 #
-# This is why upper body looked OK (few parent levels) but legs broke
-# (deep hierarchy → accumulated error).
+# For arms: BVH and UE5 arm bones have similar orientations → small error
+# For legs: BVH thighs spread sideways, UE5 thighs point down → HUGE error
 #
-# FIX: Compute LOCAL DELTA — rotation change relative to each bone's PARENT.
-# This isolates each bone's own animation from the parent chain.
-# Then apply the local delta directly to the UE5 bone's rest-local rotation.
+# v5.0 FIX: Use armature-local deltas with correct hierarchical pose formula.
 #
-# Math proof:
-#   Current approach (v4.0):
-#     delta = bvh_curr @ bvh_ref.inverted()              (armature-local)
-#     desired = delta @ ue5_rest                          (armature-local target)
-#     absolute_local = parent_anim.inverted() @ desired   (local to animated parent)
-#     pose_delta = rest_local.inverted() @ absolute_local (Blender pose delta)
+# Key formula (derived from Blender's bone transform chain):
+#   Blender: pb.matrix = parent.matrix @ local_rest @ pb.matrix_basis
+#   where local_rest = parent.bone.matrix_local.inv() @ bone.matrix_local
 #
-#   Expanding for a child bone (e.g. thigh_l, parent = pelvis):
-#     pose_delta = ue5_rest_thigh.inverted()
-#                 @ bvh_ref_pelvis @ bvh_curr_pelvis.inverted()
-#                 @ bvh_curr_thigh @ bvh_ref_thigh.inverted()
-#                 @ ue5_rest_thigh
+# We want pb.matrix (rotation) = delta_bone @ ue5_rest_bone
+# where delta_bone = bvh_curr_bone @ bvh_ref_bone.inv()  (armature-local)
 #
-#   This INCORRECTLY conjugates the thigh delta by the BVH pelvis rest pose.
-#   If BVH and UE5 pelvis have different orientations, the thigh rotation
-#   is warped by the difference.
+# Solving for pose_delta (= rotation part of matrix_basis):
+#   For root bone (no parent):
+#     pose_delta = ue5_rest.inv() @ delta_bone @ ue5_rest
 #
-#   Local delta approach (v4.1):
-#     bvh_local_delta = bvh_curr_local @ bvh_ref_local.inverted()
-#       where bvh_curr_local = parent_curr.inverted() @ bone_curr
-#       and   bvh_ref_local  = parent_ref.inverted()  @ bone_ref
+#   For child bone (with parent):
+#     pose_delta = ue5_rest_bone.inv() @ delta_parent.inv() @ delta_bone @ ue5_rest_bone
 #
-#     ue5_target_local = bvh_local_delta @ ue5_rest_local
-#     pose_delta = ue5_rest_local.inverted() @ ue5_target_local
+#     where delta_parent = delta of BVH bone mapped to UE5 parent
 #
-#   This correctly transfers ONLY the bone's own rotation change,
-#   independent of parent chain differences.
+# PROOF that this produces the correct armature-local rotation:
+#   actual = parent_actual_rot @ local_rest @ pose_delta
+#         = (delta_parent @ ue5_rest_parent) @ (ue5_rest_parent.inv() @ ue5_rest_bone)
+#           @ (ue5_rest_bone.inv() @ delta_parent.inv() @ delta_bone @ ue5_rest_bone)
+#         = delta_bone @ ue5_rest_bone  = desired  ✓
+#
+# This formula correctly handles any difference between BVH and UE5 rest poses,
+# including the leg bone orientation difference that broke v4.1.
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     """Retarget animation from BVH armature to reference (UE5) armature.
 
-    Strategy: LOCAL DELTA rotation transfer.
+    Strategy: ARMATURE-LOCAL DELTA with hierarchical pose computation.
     For each frame and each mapped bone:
-      1. Compute BVH bone's LOCAL rotation (relative to parent) at current frame
-      2. Compute BVH bone's LOCAL rotation at reference frame
-      3. Compute LOCAL DELTA = curr_local @ ref_local.inverted()
-      4. Apply delta to UE5 bone's rest-local rotation
-      5. Convert to Blender pose delta
+      1. Compute BVH armature-local delta = curr @ ref.inv()
+      2. Compute desired UE5 armature-local rotation = delta @ ue5_rest
+      3. Compute pose_delta using hierarchical formula that accounts for
+         the parent's animated rotation
+      4. Set pb.rotation_euler from pose_delta
     Root motion: extracted from BVH Hips displacement with auto forward detection
 
     All rotations are in armature-local space. We NEVER use matrix_world.
-    Local rotations are computed as: parent.inverted() @ bone
 
     Args:
         bvh_armature: Blender armature with BVH animation
@@ -391,35 +385,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         bvh_ref_rot[pb.name] = pb.matrix.to_3x3().copy()
         bvh_ref_pos[pb.name] = pb.matrix.translation.copy()
 
-    # BVH reference LOCAL rotations (relative to parent's reference rotation)
-    # This is the KEY data for the local delta approach.
-    bvh_ref_local = {}   # bone_name -> 3x3 Matrix (parent-relative)
-    for pb in bvh_armature.pose.bones:
-        if pb.parent:
-            parent_ref = bvh_ref_rot.get(pb.parent.name, I3)
-            bone_ref = bvh_ref_rot.get(pb.name, I3)
-            bvh_ref_local[pb.name] = parent_ref.inverted() @ bone_ref
-        else:
-            bvh_ref_local[pb.name] = bvh_ref_rot.get(pb.name, I3).copy()
-
     # =========================================================================
-    # STEP 2: Capture UE5 rest pose LOCAL rotations
+    # STEP 2: Capture UE5 rest pose (armature-local)
     # =========================================================================
     # For FBX-imported skeletons, pb.bone.matrix_local correctly represents
-    # the bone's rest orientation. We compute LOCAL rotations (relative to
-    # parent rest) which is what we need for the local delta approach.
+    # the bone's rest orientation in armature-local space.
     ref_rest_rot = {}   # bone_name -> 3x3 Matrix (armature-local)
     for pb in ref_armature.pose.bones:
         ref_rest_rot[pb.name] = pb.bone.matrix_local.to_3x3().copy()
-
-    ref_rest_local = {}   # bone_name -> 3x3 Matrix (relative to parent rest)
-    for pb in ref_armature.pose.bones:
-        if pb.parent:
-            parent_rest = ref_rest_rot.get(pb.parent.name, I3)
-            bone_rest = ref_rest_rot.get(pb.name, I3)
-            ref_rest_local[pb.name] = parent_rest.inverted() @ bone_rest
-        else:
-            ref_rest_local[pb.name] = ref_rest_rot.get(pb.name, I3).copy()
 
     # BVH Hips reference position for root motion
     bvh_hips_ref_pos = None
@@ -500,15 +473,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         print(f"[BVH2FBX] Unmapped: {unmapped_bones}")
 
     # =========================================================================
-    # STEP 7: Main retargeting loop — LOCAL DELTA approach
+    # STEP 7: Main retargeting loop — ARMATURE-LOCAL DELTA approach
     # =========================================================================
     # For each frame, for each bone in hierarchy order:
-    #   1. Get BVH current armature-local rotations for all bones
-    #   2. Compute BVH current LOCAL rotations (relative to parent)
-    #   3. Compute LOCAL DELTA = curr_local @ ref_local.inverted()
-    #   4. Apply to UE5: target_local = delta @ ue5_rest_local
-    #   5. pose_delta = ue5_rest_local.inverted() @ target_local
-    #   6. Set pb.rotation_euler = pose_delta.to_euler('YZX')
+    #   1. Compute BVH armature-local delta for each bone
+    #   2. For each UE5 bone:
+    #      - If mapped: pose_delta = ue5_rest.inv() @ delta_parent.inv() @ delta_bone @ ue5_rest
+    #      - If unmapped: pose_delta = identity
+    #   3. Set pb.rotation_euler from pose_delta
     for fi in range(num_frames):
         frame = frame_start + fi
         scene.frame_set(frame)
@@ -529,20 +501,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             root_pb.keyframe_insert(data_path='location', frame=fi, group=root_bone_name)
             root_pb.keyframe_insert(data_path='rotation_euler', frame=fi, group=root_bone_name)
 
-        # --- Get BVH current armature-local rotations for all bones ---
+        # --- Compute BVH armature-local deltas for all bones ---
         bvh_curr_rot = {}
+        bvh_delta = {}   # bone_name -> 3x3 delta = curr @ ref.inv()
         for pb in bvh_armature.pose.bones:
-            bvh_curr_rot[pb.name] = pb.matrix.to_3x3().copy()
-
-        # --- Compute BVH current LOCAL rotations (relative to parent) ---
-        bvh_curr_local = {}
-        for pb in bvh_armature.pose.bones:
-            if pb.parent:
-                parent_curr = bvh_curr_rot.get(pb.parent.name, I3)
-                bone_curr = bvh_curr_rot.get(pb.name, I3)
-                bvh_curr_local[pb.name] = parent_curr.inverted() @ bone_curr
-            else:
-                bvh_curr_local[pb.name] = bvh_curr_rot.get(pb.name, I3).copy()
+            curr = pb.matrix.to_3x3().copy()
+            bvh_curr_rot[pb.name] = curr
+            ref = bvh_ref_rot.get(pb.name, I3)
+            bvh_delta[pb.name] = curr @ ref.inverted()
 
         # --- Retarget each reference bone in hierarchy order ---
         for pb in get_bones_in_hierarchy_order(ref_armature):
@@ -553,25 +519,33 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
             if bvh_name and bvh_name in bvh_armature.pose.bones:
                 # =============================================================
-                # MAPPED BONE: Transfer LOCAL delta from BVH
+                # MAPPED BONE: Transfer armature-local delta with parent chain
                 # =============================================================
-                # BVH local delta: how this bone rotated relative to its parent
-                bvh_curr_l = bvh_curr_local.get(bvh_name, I3)
-                bvh_ref_l = bvh_ref_local.get(bvh_name, I3)
-                bvh_local_delta = bvh_curr_l @ bvh_ref_l.inverted()
+                # BVH armature-local delta for this bone
+                delta_bone = bvh_delta.get(bvh_name, I3)
 
-                # UE5 bone's rest-local rotation (relative to UE5 parent rest)
-                ue5_rest_l = ref_rest_local.get(pb.name, I3)
+                # UE5 bone's rest rotation in armature-local space
+                ue5_rest = ref_rest_rot.get(pb.name, I3)
 
-                # Apply BVH local delta to UE5 rest-local rotation
-                # This produces the target LOCAL rotation for the UE5 bone
-                ue5_target_local = bvh_local_delta @ ue5_rest_l
+                # Get the parent's delta
+                if pb.parent:
+                    # Find BVH bone mapped to UE5 parent
+                    parent_bvh_name = bone_map.get(pb.parent.name)
+                    delta_parent = bvh_delta.get(parent_bvh_name, I3) if parent_bvh_name else I3
 
-                # Convert to Blender pose delta
-                # Blender: W(bone) = W(parent) @ rest_local @ pose_delta
-                # We want: rest_local @ pose_delta = ue5_target_local
-                # So: pose_delta = rest_local.inverted() @ ue5_target_local
-                pose_delta = ue5_rest_l.inverted() @ ue5_target_local
+                    # Hierarchical pose formula:
+                    # pose_delta = ue5_rest.inv() @ delta_parent.inv() @ delta_bone @ ue5_rest
+                    #
+                    # This produces the correct result because:
+                    # Blender: actual_rot = parent_actual @ local_rest @ pose_delta
+                    #        = (delta_parent @ ue5_rest_parent) @ (ue5_rest_parent.inv() @ ue5_rest)
+                    #          @ (ue5_rest.inv() @ delta_parent.inv() @ delta_bone @ ue5_rest)
+                    #        = delta_bone @ ue5_rest = desired ✓
+                    pose_delta = ue5_rest.inverted() @ delta_parent.inverted() @ delta_bone @ ue5_rest
+                else:
+                    # Root-level bone (no parent in UE5):
+                    # pose_delta = ue5_rest.inv() @ delta_bone @ ue5_rest
+                    pose_delta = ue5_rest.inverted() @ delta_bone @ ue5_rest
 
                 # Normalize through quaternion for clean rotation
                 q = pose_delta.to_quaternion()
