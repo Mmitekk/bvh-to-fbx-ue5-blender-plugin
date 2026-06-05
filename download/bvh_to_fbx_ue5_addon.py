@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v3",
-    "version": (3, 4, 1),
+    "version": (3, 5, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -354,7 +354,12 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         ref_rest_world[pb.name] = (ref_armature.matrix_world @ pb.bone.matrix_local).copy()
 
     # UE5 rest LOCAL rotation matrices (relative to parent's rest)
-    # This is needed for unmapped bones to correctly compute their animated world rotation
+    # This is CRITICAL: pb.rotation_euler is a DELTA from rest pose,
+    # so we need the rest local rotation to subtract it.
+    #
+    # In Blender: W(bone) = W(parent) @ rest_local @ pose_delta
+    # Where pose_delta = pb.rotation_euler (what we keyframe)
+    # So: pose_delta = rest_local^-1 @ W(parent)^-1 @ target_W
     ref_rest_local_rot = {}  # bone_name -> 3x3 rotation relative to parent rest
     for pb in ref_armature.pose.bones:
         if pb.parent:
@@ -516,22 +521,30 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                     mathutils.Matrix.Identity(4)).to_3x3()
 
                 # Rotation delta: how much BVH bone rotated FROM ITS REST POSE
-                # This is the key fix: we use the actual rest pose, not frame_start
                 delta = bvh_world_rot @ bvh_rest_rot.inverted()
 
-                # Apply same delta to UE5 rest rotation
+                # Apply same delta to UE5 rest rotation to get target world rotation
                 desired_world_rot = delta @ ref_rest_rot
 
-                # Convert to local rotation (relative to animated parent)
-                local_rot = parent_rot.inverted() @ desired_world_rot
+                # Absolute local rotation (relative to animated parent)
+                absolute_local = parent_rot.inverted() @ desired_world_rot
 
-                # Set the pose bone rotation
-                local_euler = local_rot.to_euler('YZX')
-                pb.rotation_euler = local_euler
+                # CRITICAL FIX: pb.rotation_euler is a DELTA from rest pose,
+                # NOT the absolute local rotation!
+                # In Blender: W(bone) = W(parent) @ rest_local @ pose_delta
+                # So: pose_delta = rest_local^-1 @ absolute_local
+                rest_local = ref_rest_local_rot.get(pb.name,
+                    mathutils.Matrix.Identity(3))
+                pose_delta = rest_local.inverted() @ absolute_local
+
+                # Set the pose bone rotation (delta from rest)
+                delta_euler = pose_delta.to_euler('YZX')
+                pb.rotation_euler = delta_euler
                 pb.location = (0, 0, 0)
 
                 # Store animated world rotation for children
-                ref_animated_world_rot[pb.name] = (parent_rot @ local_rot).copy()
+                # W(bone) = W(parent) @ rest_local @ pose_delta = W(parent) @ absolute_local
+                ref_animated_world_rot[pb.name] = (parent_rot @ absolute_local).copy()
 
             else:
                 # ---- UNMAPPED BONE: keep rest pose ----
