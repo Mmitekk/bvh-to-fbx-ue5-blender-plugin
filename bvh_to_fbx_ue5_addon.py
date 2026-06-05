@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v3",
-    "version": (3, 5, 0),
+    "version": (4, 0, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -275,27 +275,42 @@ def find_root_bone(armature):
 
 
 # ============================================================================
-# RETARGETING ENGINE v3.3 — COMPLETE REWRITE
+# RETARGETING ENGINE v4.0 — COMPLETE REWRITE
 # ============================================================================
-# Key fixes over v3.2:
-# 1. BVH rest pose captured from edit bones (pb.bone.matrix_local),
-#    NOT from animated first frame
-# 2. Bone mapping fixed: LeftLeg->calf_l, Spine1->spine_02, etc.
-# 3. Unmapped bone world rotation computed using local rest rotation,
-#    NOT world rest rotation (fixes hierarchy corruption)
-# 4. Root motion with automatic forward direction detection
-# 5. Animation applied directly to original armature (mesh stays bound)
-# 6. No skeleton modifications (no adding Root bone)
+# Root cause of v3.x broken skeleton: TWO critical bugs
+#
+# BUG 1: Mixed coordinate spaces
+#   - BVH rest used WORLD space: (matrix_world @ pb.bone.matrix_local).to_3x3()
+#   - BVH animated used ARMATURE-LOCAL space: pb.matrix.to_3x3()
+#   - These are different spaces when armature.matrix_world != Identity!
+#   - delta = armature_local_rot @ world_rest_rot.inverted() → WRONG
+#
+# BUG 2: BVH pb.bone.matrix_local ≠ visual T-pose
+#   - BVH importer sets bone rest (edit bone) from the OFFSET vector only
+#   - e.g. arm bone offset might point downward, while the T-pose animation
+#     at frame 0 rotates it to horizontal
+#   - Using matrix_local as "rest" includes the "setup rotation" that the
+#     BVH animation channels apply to achieve the visual T-pose
+#   - This setup rotation gets transferred to UE5 bones as phantom rotation
+#
+# FIX: Use BVH animated pose at frame_start as the reference
+#   - delta = current_frame_rot @ frame_start_rot.inverted()
+#   - This captures ONLY the animation change, not the setup rotation
+#   - Apply delta to UE5 bone's edit-bone rest pose (matrix_local)
+#   - Work ENTIRELY in armature-local space (no matrix_world multiplication)
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     """Retarget animation from BVH armature to reference (UE5) armature.
 
-    Strategy: World-space rotation delta matching with proper rest pose handling.
+    Strategy: Bone-local rotation delta transfer.
     For each frame and each mapped bone:
-      1. Compute BVH bone's world rotation delta from EDIT MODE rest pose
-      2. Apply same delta to UE5 bone's EDIT MODE rest pose
-      3. Convert to local rotation relative to parent's animated rotation
+      1. Compute BVH bone's rotation delta from FIRST FRAME (not edit-bone rest)
+      2. Apply same delta to UE5 bone's edit-bone rest pose
+      3. Convert to Blender pose delta (relative to rest, local to parent)
     Root motion: extracted from BVH Hips displacement with auto forward detection
+
+    All matrices are in ARMATURE-LOCAL space (PoseBone.matrix, Bone.matrix_local).
+    We NEVER multiply by armature.matrix_world to avoid space mixing.
 
     Args:
         bvh_armature: Blender armature with BVH animation
@@ -306,6 +321,8 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         (action, stats_dict)
     """
     scene = bpy.context.scene
+    I3 = mathutils.Matrix.Identity(3)
+    I4 = mathutils.Matrix.Identity(4)
 
     # Get BVH animation info
     bvh_action = None
@@ -336,57 +353,64 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     if not root_bone_name:
         return None, {"error": "No root bone found in reference armature"}
 
-    # -------------------------------------------------------------------------
-    # Store REST POSE data from EDIT BONES
-    # This is the CRITICAL fix: we use pb.bone.matrix_local which gives
-    # the actual rest pose (edit mode) matrix, NOT the animated first frame.
-    # -------------------------------------------------------------------------
-    # BVH rest pose world matrices (from edit bones)
-    bvh_rest_world = {}
+    # =========================================================================
+    # STEP 1: Capture BVH reference pose at frame_start (ANIMATED, not edit)
+    # =========================================================================
+    # This is the KEY FIX over v3.x: we use the BVH bone's animated rotation
+    # at the first frame as the "reference" for computing deltas.
+    # BVH edit bones (matrix_local) only represent the OFFSET direction,
+    # NOT the visual T-pose. The animation channels at frame 0 produce the
+    # visual T-pose by applying rotations on top of the offset-based rest.
+    # Using matrix_local would include these setup rotations as phantom deltas.
+    scene.frame_set(frame_start)
+    bpy.context.view_layer.update()
+
+    # BVH bone rotations at frame_start, in armature-local space
+    bvh_ref_rot = {}   # bone_name -> 3x3 Matrix
+    bvh_ref_pos = {}   # bone_name -> Vector (armature-local translation)
     for pb in bvh_armature.pose.bones:
-        # pb.bone.matrix_local is the bone's rest matrix in armature-local space
-        # Multiply by armature's world matrix to get world-space rest pose
-        bvh_rest_world[pb.name] = (bvh_armature.matrix_world @ pb.bone.matrix_local).copy()
+        bvh_ref_rot[pb.name] = pb.matrix.to_3x3().copy()
+        bvh_ref_pos[pb.name] = pb.matrix.translation.copy()
 
-    # UE5 rest pose world matrices (from edit bones)
-    ref_rest_world = {}
+    # =========================================================================
+    # STEP 2: Capture UE5 rest pose from edit bones (armature-local space)
+    # =========================================================================
+    # For FBX-imported skeletons, pb.bone.matrix_local correctly represents
+    # the bone's rest orientation because FBX explicitly defines rest poses.
+    # We use armature-local space (no matrix_world) for consistency.
+    ref_rest_rot = {}   # bone_name -> 3x3 Matrix (armature-local)
     for pb in ref_armature.pose.bones:
-        ref_rest_world[pb.name] = (ref_armature.matrix_world @ pb.bone.matrix_local).copy()
+        ref_rest_rot[pb.name] = pb.bone.matrix_local.to_3x3().copy()
 
-    # UE5 rest LOCAL rotation matrices (relative to parent's rest)
-    # This is CRITICAL: pb.rotation_euler is a DELTA from rest pose,
-    # so we need the rest local rotation to subtract it.
+    # UE5 rest LOCAL rotation: rotation of bone relative to parent's rest
+    # This is needed because pb.rotation_euler is a DELTA from rest pose.
     #
-    # In Blender: W(bone) = W(parent) @ rest_local @ pose_delta
-    # Where pose_delta = pb.rotation_euler (what we keyframe)
-    # So: pose_delta = rest_local^-1 @ W(parent)^-1 @ target_W
-    ref_rest_local_rot = {}  # bone_name -> 3x3 rotation relative to parent rest
+    # Blender formula: W(bone) = W(parent) @ rest_local @ pose_delta
+    # So: pose_delta = rest_local^-1 @ W(parent)^-1 @ desired_W
+    ref_rest_local = {}   # bone_name -> 3x3 Matrix (relative to parent rest)
     for pb in ref_armature.pose.bones:
         if pb.parent:
-            parent_rest_world_3x3 = ref_rest_world[pb.parent.name].to_3x3()
-            bone_rest_world_3x3 = ref_rest_world[pb.name].to_3x3()
-            ref_rest_local_rot[pb.name] = parent_rest_world_3x3.inverted() @ bone_rest_world_3x3
+            parent_rest = ref_rest_rot.get(pb.parent.name, I3)
+            bone_rest = ref_rest_rot.get(pb.name, I3)
+            ref_rest_local[pb.name] = parent_rest.inverted() @ bone_rest
         else:
-            ref_rest_local_rot[pb.name] = ref_rest_world[pb.name].to_3x3()
+            ref_rest_local[pb.name] = ref_rest_rot.get(pb.name, I3).copy()
 
-    # BVH Hips rest world position for root motion baseline
-    bvh_hips_rest_pos = None
-    if bvh_hips and bvh_hips.name in bvh_rest_world:
-        bvh_hips_rest_pos = bvh_rest_world[bvh_hips.name].translation.copy()
+    # BVH Hips reference position for root motion
+    bvh_hips_ref_pos = None
+    if bvh_hips:
+        bvh_hips_ref_pos = bvh_ref_pos.get(bvh_hips.name)
 
-    # -------------------------------------------------------------------------
-    # Detect forward direction from BVH Hips displacement
-    # The character should walk along UE5's forward direction.
-    # In Blender, UE5 characters typically face -Y.
-    # We compute the net walking direction from BVH and rotate
-    # the root motion to align with -Y.
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # STEP 3: Detect forward direction from BVH Hips displacement
+    # =========================================================================
+    # The BVH character may walk in any direction in Blender space.
+    # UE5 characters face -Y in Blender. We compute the walking direction
+    # and create a rotation that aligns it with -Y for root motion.
     forward_rotation = mathutils.Matrix.Identity(4)
+    forward_rot_3x3 = I3.copy()
     if bvh_hips and num_frames > 1:
-        # Sample first and last frames to get walking direction
-        scene.frame_set(frame_start)
-        bpy.context.view_layer.update()
-        start_pos = bvh_hips.matrix.translation.copy()
+        start_pos = bvh_ref_pos.get(bvh_hips.name, mathutils.Vector((0, 0, 0)))
 
         scene.frame_set(frame_end)
         bpy.context.view_layer.update()
@@ -400,10 +424,8 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             # UE5 forward in Blender is -Y
             target_dir = mathutils.Vector((0, -1, 0))
 
-            # Compute rotation from walk_dir to target_dir
             dot = walk_dir.dot(target_dir)
             if dot < -0.9999:
-                # Nearly opposite: 180 degree rotation around Z
                 forward_rotation = mathutils.Matrix.Rotation(math.pi, 4, 'Z')
             elif dot < 0.9999:
                 axis = walk_dir.cross(target_dir)
@@ -412,12 +434,15 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                     angle = math.acos(max(-1.0, min(1.0, dot)))
                     forward_rotation = mathutils.Matrix.Rotation(angle, 4, axis)
 
-            print(f"[BVH2FBX] Walk direction: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f})")
-            print(f"[BVH2FBX] Applied forward correction: {math.degrees(math.acos(max(-1.0, min(1.0, dot)))):.1f} degrees")
+            forward_rot_3x3 = forward_rotation.to_3x3()
 
-    # -------------------------------------------------------------------------
-    # Create new animation action on reference armature
-    # -------------------------------------------------------------------------
+            print(f"[BVH2FBX] Walk direction: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f})")
+            dot_clamped = max(-1.0, min(1.0, dot))
+            print(f"[BVH2FBX] Forward correction: {math.degrees(math.acos(dot_clamped)):.1f} degrees")
+
+    # =========================================================================
+    # STEP 4: Create new animation action on reference armature
+    # =========================================================================
     if ref_armature.animation_data is None:
         ref_armature.animation_data_create()
 
@@ -428,18 +453,18 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     scene.frame_start = 0
     scene.frame_end = num_frames - 1
 
-    # -------------------------------------------------------------------------
-    # Switch to POSE mode and set rotation mode
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # STEP 5: Switch to POSE mode and set rotation mode
+    # =========================================================================
     bpy.context.view_layer.objects.active = ref_armature
     bpy.ops.object.mode_set(mode='POSE')
 
     for pb in ref_armature.pose.bones:
         pb.rotation_mode = 'YZX'
 
-    # -------------------------------------------------------------------------
-    # Track which bones were mapped
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # STEP 6: Track which bones were mapped
+    # =========================================================================
     mapped_bones = []
     unmapped_bones = []
 
@@ -453,10 +478,19 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
     print(f"[BVH2FBX] Mapped {len(mapped_bones)} bones, unmapped {len(unmapped_bones)}")
     print(f"[BVH2FBX] Mapped: {mapped_bones}")
+    if unmapped_bones:
+        print(f"[BVH2FBX] Unmapped: {unmapped_bones}")
 
-    # -------------------------------------------------------------------------
-    # Main retargeting loop
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # STEP 7: Main retargeting loop
+    # =========================================================================
+    # For each frame, for each bone in hierarchy order:
+    #   - Compute delta = BVH_current @ BVH_reference^(-1)   (rotation change)
+    #   - Apply delta to UE5 rest: desired = delta @ UE5_rest
+    #   - Convert to Blender pose: pose_delta = rest_local^(-1) @ parent^(-1) @ desired
+    #   - Set pb.rotation_euler = pose_delta.to_euler('YZX')
+    #
+    # All in armature-local space. No matrix_world involved.
     for fi in range(num_frames):
         frame = frame_start + fi
         scene.frame_set(frame)
@@ -464,36 +498,26 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
         # --- Root Motion ---
         root_pb = ref_armature.pose.bones.get(root_bone_name)
-        if root_pb and bvh_hips:
-            hips_world_pos = bvh_hips.matrix.translation
-            if bvh_hips_rest_pos:
-                disp = hips_world_pos - bvh_hips_rest_pos
-                # Apply forward direction correction
-                disp_corrected = forward_rotation @ disp
-                root_pb.location = disp_corrected * scale_factor
-            else:
-                root_pb.location = (0, 0, 0)
-
-            # Root bone only carries translation, no rotation
-            root_pb.rotation_euler = (0, 0, 0)
-            root_pb.keyframe_insert(data_path='location', frame=fi, group=root_bone_name)
-            root_pb.keyframe_insert(data_path='rotation_euler', frame=fi, group=root_bone_name)
+        if root_pb and bvh_hips and bvh_hips_ref_pos:
+            hips_pos = bvh_hips.matrix.translation
+            disp = hips_pos - bvh_hips_ref_pos
+            # Apply forward direction correction
+            disp_corrected = forward_rotation @ disp
+            root_pb.location = disp_corrected * scale_factor
         elif root_pb:
             root_pb.location = (0, 0, 0)
+
+        if root_pb:
             root_pb.rotation_euler = (0, 0, 0)
             root_pb.keyframe_insert(data_path='location', frame=fi, group=root_bone_name)
             root_pb.keyframe_insert(data_path='rotation_euler', frame=fi, group=root_bone_name)
 
         # --- Retarget each reference bone in hierarchy order ---
-        # Track animated world ROTATIONS (3x3) for correct parent-child computation
-        ref_animated_world_rot = {}
+        # Track animated armature-local rotations (3x3) for parent-child math
+        ref_anim_rot = {}
 
-        # Root bone's animated world rotation = its rest world rotation
-        # (root has identity or near-identity rotation, no rotation animation)
-        if root_bone_name in ref_rest_world:
-            ref_animated_world_rot[root_bone_name] = ref_rest_world[root_bone_name].to_3x3().copy()
-        else:
-            ref_animated_world_rot[root_bone_name] = mathutils.Matrix.Identity(3)
+        # Root bone: animated rotation = rest rotation (no rotation animation on root)
+        ref_anim_rot[root_bone_name] = ref_rest_rot.get(root_bone_name, I3).copy()
 
         for pb in get_bones_in_hierarchy_order(ref_armature):
             if pb.name == root_bone_name:
@@ -502,66 +526,63 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             bvh_name = bone_map.get(pb.name)
             parent_name = pb.parent.name if pb.parent else root_bone_name
 
-            # Get parent's animated world rotation
-            parent_rot = ref_animated_world_rot.get(parent_name, mathutils.Matrix.Identity(3))
+            # Parent's animated armature-local rotation
+            parent_rot = ref_anim_rot.get(parent_name, I3)
 
             if bvh_name and bvh_name in bvh_armature.pose.bones:
-                # ---- MAPPED BONE: retarget from BVH ----
+                # =============================================================
+                # MAPPED BONE: Retarget rotation from BVH
+                # =============================================================
                 bvh_pb = bvh_armature.pose.bones[bvh_name]
 
-                # BVH bone's world rotation at this frame (animated)
-                bvh_world_rot = bvh_pb.matrix.to_3x3()
+                # Current BVH bone rotation in armature-local space
+                bvh_curr = bvh_pb.matrix.to_3x3()
 
-                # BVH bone's REST world rotation (from edit bones, not animated frame!)
-                bvh_rest_rot = bvh_rest_world.get(bvh_name,
-                    mathutils.Matrix.Identity(4)).to_3x3()
+                # Reference BVH rotation (at frame_start, the visual "rest")
+                bvh_ref = bvh_ref_rot.get(bvh_name, I3)
 
-                # UE5 bone's REST world rotation (from edit bones)
-                ref_rest_rot = ref_rest_world.get(pb.name,
-                    mathutils.Matrix.Identity(4)).to_3x3()
+                # UE5 bone's edit-bone rest rotation (armature-local)
+                ue5_rest = ref_rest_rot.get(pb.name, I3)
 
-                # Rotation delta: how much BVH bone rotated FROM ITS REST POSE
-                delta = bvh_world_rot @ bvh_rest_rot.inverted()
+                # Delta: rotation change from BVH reference to current frame
+                # This captures ONLY the animation, not the BVH setup rotation
+                delta = bvh_curr @ bvh_ref.inverted()
 
-                # Apply same delta to UE5 rest rotation to get target world rotation
-                desired_world_rot = delta @ ref_rest_rot
+                # Apply delta to UE5 rest pose
+                # desired = delta @ ue5_rest gives the target armature-local rotation
+                desired = delta @ ue5_rest
 
-                # Absolute local rotation (relative to animated parent)
-                absolute_local = parent_rot.inverted() @ desired_world_rot
+                # Convert to local rotation relative to animated parent
+                absolute_local = parent_rot.inverted() @ desired
 
-                # CRITICAL FIX: pb.rotation_euler is a DELTA from rest pose,
-                # NOT the absolute local rotation!
-                # In Blender: W(bone) = W(parent) @ rest_local @ pose_delta
-                # So: pose_delta = rest_local^-1 @ absolute_local
-                rest_local = ref_rest_local_rot.get(pb.name,
-                    mathutils.Matrix.Identity(3))
+                # Convert to Blender pose delta (relative to bone's own rest)
+                # Blender: W(bone) = W(parent) @ rest_local @ pose_delta
+                # So: pose_delta = rest_local^(-1) @ absolute_local
+                rest_local = ref_rest_local.get(pb.name, I3)
                 pose_delta = rest_local.inverted() @ absolute_local
 
-                # Set the pose bone rotation (delta from rest)
-                delta_euler = pose_delta.to_euler('YZX')
-                pb.rotation_euler = delta_euler
+                # Normalize through quaternion to ensure pure rotation
+                # (removes any accumulated scale from matrix operations)
+                q = pose_delta.to_quaternion()
+                pb.rotation_euler = q.to_euler('YZX')
                 pb.location = (0, 0, 0)
 
-                # Store animated world rotation for children
+                # Track animated rotation for children
                 # W(bone) = W(parent) @ rest_local @ pose_delta = W(parent) @ absolute_local
-                ref_animated_world_rot[pb.name] = (parent_rot @ absolute_local).copy()
+                ref_anim_rot[pb.name] = (parent_rot @ absolute_local).copy()
 
             else:
-                # ---- UNMAPPED BONE: keep rest pose ----
+                # =============================================================
+                # UNMAPPED BONE: Keep rest pose
+                # =============================================================
                 pb.rotation_euler = (0, 0, 0)
                 pb.location = (0, 0, 0)
 
-                # CRITICAL FIX: Use LOCAL rest rotation (relative to parent rest),
-                # NOT world rest rotation. Using world rest rotation here was
-                # breaking the hierarchy because it doesn't account for parent
-                # animation correctly.
-                #
-                # World rotation of unmapped bone = parent_animated_rot @ local_rest_rot
-                # NOT = parent_animated_rot @ bone_world_rest_rot
-                local_rest_rot = ref_rest_local_rot.get(pb.name,
-                    mathutils.Matrix.Identity(3))
-
-                ref_animated_world_rot[pb.name] = (parent_rot @ local_rest_rot).copy()
+                # Animated rotation = parent's animated @ local rest rotation
+                # This ensures unmapped bones follow their parent's animation
+                # while maintaining their rest-pose orientation relative to parent
+                local_rest = ref_rest_local.get(pb.name, I3)
+                ref_anim_rot[pb.name] = (parent_rot @ local_rest).copy()
 
             # Keyframe rotation and location
             pb.keyframe_insert(data_path='rotation_euler', frame=fi, group=pb.name)
@@ -577,7 +598,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         "fps": scene.render.fps,
         "has_root_motion": bvh_hips is not None,
         "root_bone_name": root_bone_name,
-        "forward_correction": "Yes" if forward_rotation != mathutils.Matrix.Identity(4) else "No",
+        "forward_correction": "Yes" if forward_rotation != I4 else "No",
     }
 
     return new_action, stats
