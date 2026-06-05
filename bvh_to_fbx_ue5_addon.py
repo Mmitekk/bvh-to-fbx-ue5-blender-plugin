@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v3",
-    "version": (3, 3, 0),
+    "version": (3, 4, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -583,7 +583,16 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         props = context.scene.bvh2fbx_props
-        return props.bvh_filepath and context.active_object and context.active_object.type == 'ARMATURE'
+        if not props.bvh_filepath:
+            return False
+        # Accept if active object is armature OR if any armature exists in scene
+        if context.active_object and context.active_object.type == 'ARMATURE':
+            return True
+        # Also check for armatures in scene (user may have mesh selected)
+        for obj in context.scene.objects:
+            if obj.type == 'ARMATURE':
+                return True
+        return False
 
     def execute(self, context):
         props = context.scene.bvh2fbx_props
@@ -606,11 +615,12 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
             self.report({'ERROR'}, f"Ошибка чтения файла: {e}")
             return {'CANCELLED'}
 
-        # Find reference armature
+        # Find reference armature - try active object first, then search scene
         ref_armature = None
-        if props.use_selected_armature and context.active_object and context.active_object.type == 'ARMATURE':
+        if context.active_object and context.active_object.type == 'ARMATURE':
             ref_armature = context.active_object
         else:
+            # Search scene for armature (user may have mesh selected)
             for obj in context.scene.objects:
                 if obj.type == 'ARMATURE':
                     ref_armature = obj
