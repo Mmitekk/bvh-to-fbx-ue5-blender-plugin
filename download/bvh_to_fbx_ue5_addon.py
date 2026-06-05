@@ -1,18 +1,97 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v2",
-    "version": (2, 0, 0),
+    "author": "BVH2FBX Converter v3",
+    "version": (3, 0, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
     "category": "Animation",
+    "tracker_url": "https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin",
 }
 
 import bpy
 import os
 import math
 import mathutils
+import json
+import shutil
+import tempfile
+import urllib.request
+import urllib.error
+import ssl
 from collections import OrderedDict
+
+# ============================================================================
+# UPDATE SYSTEM CONSTANTS
+# ============================================================================
+
+GITHUB_REPO = "Mmitekk/bvh-to-fbx-ue5-blender-plugin"
+GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+ADDON_FILENAME = "bvh_to_fbx_ue5_addon.py"
+
+CURRENT_VERSION = bl_info["version"]  # (3, 0, 0)
+
+
+def version_to_string(v):
+    """Convert version tuple to string like '3.0.0'."""
+    return ".".join(str(x) for x in v)
+
+
+def string_to_version(s):
+    """Convert version string like '3.0.0' to tuple (3, 0, 0)."""
+    parts = s.strip().lstrip("v").split(".")
+    result = []
+    for p in parts:
+        try:
+            result.append(int(p))
+        except ValueError:
+            result.append(0)
+    while len(result) < 3:
+        result.append(0)
+    return tuple(result[:3])
+
+
+def fetch_github_releases():
+    """Fetch list of releases from GitHub API.
+
+    Returns:
+        list of dicts with keys: tag_name, name, published_at, assets, html_url
+    """
+    ctx = ssl.create_default_context()
+    try:
+        req = urllib.request.Request(
+            GITHUB_API_RELEASES,
+            headers={"User-Agent": "BVH2FBX-Blender-Addon", "Accept": "application/vnd.github.v3+json"},
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data
+    except Exception as e:
+        print(f"[BVH2FBX] Failed to fetch releases: {e}")
+        return []
+
+
+def find_asset_url(release, filename):
+    """Find download URL for a specific file in release assets."""
+    for asset in release.get("assets", []):
+        if asset.get("name") == filename:
+            return asset.get("browser_download_url") or asset.get("url")
+    # Fallback: try to get from source archive
+    return None
+
+
+def download_file(url, dest_path):
+    """Download a file from URL to dest_path."""
+    ctx = ssl.create_default_context()
+    req = urllib.request.Request(url, headers={"User-Agent": "BVH2FBX-Blender-Addon"})
+    with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(resp, f)
+
+
+def get_addon_install_path():
+    """Get the path where the addon .py file is currently installed."""
+    return os.path.abspath(__file__)
 
 
 # ============================================================================
@@ -476,7 +555,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
 
 # ============================================================================
-# BLENDER OPERATORS
+# BLENDER OPERATORS — CONVERSION
 # ============================================================================
 
 class BVH2FBX_OT_convert(bpy.types.Operator):
@@ -669,8 +748,211 @@ class BVH2FBX_OT_import_skeleton(bpy.types.Operator):
 
 
 # ============================================================================
+# BLENDER OPERATORS — UPDATE SYSTEM
+# ============================================================================
+
+class BVH2FBX_OT_check_updates(bpy.types.Operator):
+    """Check GitHub for available plugin updates."""
+    bl_idname = "bvh2fbx.check_updates"
+    bl_label = "Проверить обновления"
+    bl_description = "Проверить GitHub на наличие новых версий плагина"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        props = context.scene.bvh2fbx_props
+
+        self.report({'INFO'}, "Проверка обновлений...")
+        releases = fetch_github_releases()
+
+        if not releases:
+            props.update_status = "Нет связи с GitHub"
+            self.report({'WARNING'}, "Не удалось получить список релизов. Проверьте подключение к интернету.")
+            return {'CANCELLED'}
+
+        # Build enum items for version selector
+        enum_items = []
+        for rel in releases:
+            tag = rel.get("tag_name", "")
+            name = rel.get("name", tag)
+            # Check if this release has our addon file as asset
+            has_asset = any(a.get("name") == ADDON_FILENAME for a in rel.get("assets", []))
+            if has_asset:
+                label = f"{tag} — {name}"
+                enum_items.append((tag, label, f"Release {tag}"))
+
+        if not enum_items:
+            # Also try source code
+            for rel in releases:
+                tag = rel.get("tag_name", "")
+                name = rel.get("name", tag)
+                label = f"{tag} — {name} (source)"
+                enum_items.append((tag, label, f"Release {tag} (source archive)"))
+
+        if not enum_items:
+            props.update_status = "Релизы не найдены"
+            self.report({'INFO'}, "Релизы не найдены на GitHub.")
+            return {'CANCELLED'}
+
+        # Store releases data in a collection property
+        props.available_versions.clear()
+        for tag, label, desc in enum_items:
+            item = props.available_versions.add()
+            item.tag = tag
+            item.label = label
+            item.description = desc
+
+        # Find latest version
+        latest_tag = enum_items[0][0]
+        latest_ver = string_to_version(latest_tag)
+        current = CURRENT_VERSION
+
+        if latest_ver > current:
+            props.update_status = f"Доступно обновление: {latest_tag}"
+            self.report({'INFO'}, f"Новая версия доступна: {latest_tag} (текущая: {version_to_string(current)})")
+        else:
+            props.update_status = f"Установлена последняя версия ({version_to_string(current)})"
+            self.report({'INFO'}, f"У вас последняя версия: {version_to_string(current)}")
+
+        return {'FINISHED'}
+
+
+class BVH2FBX_OT_install_update(bpy.types.Operator):
+    """Install a selected version from GitHub releases."""
+    bl_idname = "bvh2fbx.install_update"
+    bl_label = "Установить обновление"
+    bl_description = "Скачать и установить выбранную версию плагина из GitHub"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.bvh2fbx_props
+        return len(props.available_versions) > 0 and props.selected_version_index >= 0
+
+    def execute(self, context):
+        props = context.scene.bvh2fbx_props
+
+        if props.selected_version_index < 0 or props.selected_version_index >= len(props.available_versions):
+            self.report({'ERROR'}, "Выберите версию для установки")
+            return {'CANCELLED'}
+
+        selected = props.available_versions[props.selected_version_index]
+        target_tag = selected.tag
+
+        self.report({'INFO'}, f"Загрузка версии {target_tag}...")
+
+        # Fetch releases again to get asset URLs
+        releases = fetch_github_releases()
+        target_release = None
+        for rel in releases:
+            if rel.get("tag_name") == target_tag:
+                target_release = rel
+                break
+
+        if not target_release:
+            self.report({'ERROR'}, f"Релиз {target_tag} не найден на GitHub")
+            return {'CANCELLED'}
+
+        # Try to find the addon .py file as a release asset
+        asset_url = find_asset_url(target_release, ADDON_FILENAME)
+
+        if not asset_url:
+            # Fallback: download zip of source and extract the addon file
+            zipball_url = target_release.get("zipball_url")
+            if not zipball_url:
+                self.report({'ERROR'}, f"Не найден файл {ADDON_FILENAME} в релизе {target_tag}")
+                return {'CANCELLED'}
+
+            # Download source archive
+            try:
+                tmp_dir = tempfile.mkdtemp(prefix="bvh2fbx_update_")
+                zip_path = os.path.join(tmp_dir, "source.zip")
+                self.report({'INFO'}, "Загрузка архива исходного кода...")
+                download_file(zipball_url, zip_path)
+
+                # Extract the addon file from the archive
+                import zipfile
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    addon_found = False
+                    for info in zf.infolist():
+                        if info.filename.endswith(ADDON_FILENAME) and not info.is_dir():
+                            # Extract just this file
+                            with zf.open(info) as src, open(os.path.join(tmp_dir, ADDON_FILENAME), 'wb') as dst:
+                                dst.write(src.read())
+                            addon_found = True
+                            break
+                    if not addon_found:
+                        self.report({'ERROR'}, f"Файл {ADDON_FILENAME} не найден в архиве релиза")
+                        shutil.rmtree(tmp_dir, ignore_errors=True)
+                        return {'CANCELLED'}
+
+                asset_url = None  # Flag that we already have the file locally
+
+            except Exception as e:
+                self.report({'ERROR'}, f"Ошибка загрузки архива: {e}")
+                return {'CANCELLED'}
+
+        # Download the addon file
+        current_addon_path = get_addon_install_path()
+        backup_path = current_addon_path + ".backup"
+        new_addon_path = current_addon_path + ".new"
+
+        try:
+            if asset_url:
+                # Download the standalone .py file from release assets
+                tmp_dir = tempfile.mkdtemp(prefix="bvh2fbx_update_")
+                tmp_file = os.path.join(tmp_dir, ADDON_FILENAME)
+                self.report({'INFO'}, f"Скачивание {ADDON_FILENAME}...")
+                download_file(asset_url, tmp_file)
+                shutil.copy2(tmp_file, new_addon_path)
+            else:
+                # File was already extracted from zip
+                extracted = os.path.join(tmp_dir, ADDON_FILENAME)
+                shutil.copy2(extracted, new_addon_path)
+
+            # Backup current version
+            shutil.copy2(current_addon_path, backup_path)
+
+            # Replace current addon with new version
+            shutil.move(new_addon_path, current_addon_path)
+
+            self.report({'INFO'}, f"Обновление до {target_tag} установлено! Перезапустите Blender для применения.")
+
+            props.update_status = f"Обновлено до {target_tag}! Перезапустите Blender."
+
+        except Exception as e:
+            # Restore backup if something went wrong
+            if os.path.exists(backup_path):
+                try:
+                    shutil.move(backup_path, current_addon_path)
+                except Exception:
+                    pass
+            self.report({'ERROR'}, f"Ошибка установки обновления: {e}")
+            return {'CANCELLED'}
+        finally:
+            # Cleanup
+            if 'tmp_dir' in locals():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            if os.path.exists(new_addon_path):
+                os.remove(new_addon_path)
+            # Keep backup for safety, remove old backups after successful update
+            if os.path.exists(backup_path) and props.update_status.startswith("Обновлено"):
+                try:
+                    os.remove(backup_path)
+                except Exception:
+                    pass
+
+        return {'FINISHED'}
+
+
+# ============================================================================
 # PROPERTIES
 # ============================================================================
+
+class BVH2FBX_VersionItem(bpy.types.PropertyGroup):
+    tag: bpy.props.StringProperty(name="Tag", default="")
+    label: bpy.props.StringProperty(name="Label", default="")
+    description: bpy.props.StringProperty(name="Description", default="")
+
 
 class BVH2FBX_Properties(bpy.types.PropertyGroup):
     bvh_filepath: bpy.props.StringProperty(
@@ -707,9 +989,24 @@ class BVH2FBX_Properties(bpy.types.PropertyGroup):
         default=True,
     )
 
+    # --- Update system properties ---
+    available_versions: bpy.props.CollectionProperty(type=BVH2FBX_VersionItem)
+
+    selected_version_index: bpy.props.IntProperty(
+        name="Выбранная версия",
+        description="Индекс выбранной версии из списка доступных",
+        default=-1,
+    )
+
+    update_status: bpy.props.StringProperty(
+        name="Статус обновления",
+        description="Текущий статус проверки обновлений",
+        default=f"Текущая версия: {version_to_string(CURRENT_VERSION)}",
+    )
+
 
 # ============================================================================
-# UI PANEL
+# UI PANELS
 # ============================================================================
 
 class BVH2FBX_PT_main(bpy.types.Panel):
@@ -838,15 +1135,121 @@ class BVH2FBX_PT_main(bpy.types.Panel):
                 pass
 
 
+class BVH2FBX_UL_versions(bpy.types.UIList):
+    """UI List for displaying available versions."""
+    bl_idname = "BVH2FBX_UL_versions"
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            ver = string_to_version(item.tag)
+            is_newer = ver > CURRENT_VERSION
+            is_current = ver == CURRENT_VERSION
+            if is_current:
+                icon_val = 'CHECKMARK'
+            elif is_newer:
+                icon_val = 'SOLO_ON'
+            else:
+                icon_val = 'SOLO_OFF'
+            layout.label(text=item.label, icon=icon_val)
+        elif self.layout_type == 'GRID':
+            layout.alignment = 'CENTER'
+            layout.label(text=item.tag)
+
+
+class BVH2FBX_PT_update(bpy.types.Panel):
+    """Panel for the update system."""
+    bl_label = "Обновление плагина"
+    bl_idname = "BVH2FBX_PT_update"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "BVH2FBX"
+    bl_parent_id = "BVH2FBX_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.bvh2fbx_props
+
+        # Current version
+        box = layout.box()
+        box.label(text=f"Текущая версия: {version_to_string(CURRENT_VERSION)}", icon='INFO')
+        box.label(text=f"Репозиторий: {GITHUB_REPO}", icon='URL')
+
+        # Status
+        if props.update_status:
+            status_icon = 'ERROR' if 'Ошибка' in props.update_status else 'INFO'
+            if 'Доступно обновление' in props.update_status:
+                status_icon = 'COLORSET_13_VEC'
+            elif 'Установлена последняя' in props.update_status:
+                status_icon = 'CHECKMARK'
+            elif 'Обновлено' in props.update_status:
+                status_icon = 'CHECKMARK'
+            box.label(text=props.update_status, icon=status_icon)
+
+        # Check for updates button
+        layout.separator()
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        row.operator("bvh2fbx.check_updates", text="Проверить обновления", icon='FILE_REFRESH')
+
+        # Version selector
+        if len(props.available_versions) > 0:
+            layout.separator()
+
+            layout.template_list(
+                "BVH2FBX_UL_versions",
+                "",
+                props,
+                "available_versions",
+                props,
+                "selected_version_index",
+                rows=5,
+            )
+
+            # Install button
+            if 0 <= props.selected_version_index < len(props.available_versions):
+                selected = props.available_versions[props.selected_version_index]
+                selected_ver = string_to_version(selected.tag)
+                if selected_ver > CURRENT_VERSION:
+                    layout.separator()
+                    layout.scale_y = 1.5
+                    layout.operator("bvh2fbx.install_update",
+                                    text=f"Установить {selected.tag}",
+                                    icon='IMPORT')
+                elif selected_ver == CURRENT_VERSION:
+                    layout.separator()
+                    layout.scale_y = 1.2
+                    layout.operator("bvh2fbx.install_update",
+                                    text=f"Переустановить {selected.tag}",
+                                    icon='FILE_REFRESH')
+                else:
+                    layout.separator()
+                    layout.scale_y = 1.2
+                    layout.operator("bvh2fbx.install_update",
+                                    text=f"Откатить до {selected.tag}",
+                                    icon='LOOP_BACK')
+
+        # Note about restart
+        layout.separator()
+        note_box = layout.box()
+        note_box.label(text="Примечание: после установки требуется", icon='INFO')
+        note_box.label(text="перезапуск Blender для применения обновления")
+
+
 # ============================================================================
 # REGISTRATION
 # ============================================================================
 
 classes = (
+    BVH2FBX_VersionItem,
+    BVH2FBX_UL_versions,
     BVH2FBX_Properties,
     BVH2FBX_OT_convert,
     BVH2FBX_OT_import_skeleton,
+    BVH2FBX_OT_check_updates,
+    BVH2FBX_OT_install_update,
     BVH2FBX_PT_main,
+    BVH2FBX_PT_update,
 )
 
 
