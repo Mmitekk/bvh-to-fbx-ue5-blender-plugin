@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v3",
-    "version": (3, 2, 0),
+    "version": (3, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -255,43 +255,27 @@ def get_bones_in_hierarchy_order(armature):
 # ROOT BONE HANDLING
 # ============================================================================
 
-def find_or_add_root_bone(armature):
-    """Find existing root bone or add a new 'Root' wrapper bone.
+def find_root_bone(armature):
+    """Find the root bone of the armature (topmost bone with no parent).
 
-    UE5 Quinn skeleton already has a 'root' bone - we use it for root motion.
-    For skeletons without a dedicated root bone, we add one.
+    IMPORTANT: This function does NOT modify the skeleton hierarchy.
+    It only finds the existing root bone for root motion animation.
 
-    Returns the name of the root motion bone.
+    Returns the name of the root bone, or None if not found.
     """
-    # Check if there's already a suitable root bone
+    # Check for known root bone names first
     for candidate in ['root', 'Root']:
         if candidate in armature.pose.bones:
             pb = armature.pose.bones[candidate]
             if pb.parent is None:
-                # Found existing root bone - use it
                 return candidate
 
-    # No existing root bone found - add a new one above all root bones
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.mode_set(mode='EDIT')
+    # Fall back to any bone that has no parent
+    for pb in armature.pose.bones:
+        if pb.parent is None:
+            return pb.name
 
-    edit_bones = armature.data.edit_bones
-    root_bones = [eb for eb in edit_bones if eb.parent is None]
-    if not root_bones:
-        bpy.ops.object.mode_set(mode='OBJECT')
-        return None
-
-    root_eb = edit_bones.new('Root')
-    root_eb.head = (0, 0, 0)
-    root_eb.tail = (0, 0, 1)
-    root_eb.use_connect = False
-
-    for rb in root_bones:
-        rb.parent = root_eb
-        rb.use_connect = False
-
-    bpy.ops.object.mode_set(mode='OBJECT')
-    return 'Root'
+    return None
 
 
 # ============================================================================
@@ -393,10 +377,10 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     # -------------------------------------------------------------------------
     # Find or add Root bone for UE5 root motion
     # -------------------------------------------------------------------------
-    root_bone_name = find_or_add_root_bone(ref_armature)
+    root_bone_name = find_root_bone(ref_armature)
 
     if not root_bone_name:
-        return None, {"error": "Failed to find or add Root bone"}
+        return None, {"error": "Failed to find Root bone in armature"}
 
     # Ensure rest world matrices include root bone
     if root_bone_name not in ref_rest_world:
@@ -656,8 +640,8 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
                 filepath=props.bvh_filepath,
                 target='ARMATURE',
                 rotate_mode='NATIVE',
-                axis_forward='-Z',
-                axis_up='Y',
+                axis_forward='-Y',
+                axis_up='Z',
             )
         except Exception as e:
             self.report({'ERROR'}, f"Ошибка импорта BVH: {e}")
