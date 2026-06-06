@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v6",
-    "version": (6, 0, 1),
+    "version": (6, 1, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -446,41 +446,57 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 
 
 # ============================================================================
-# RETARGETING ENGINE v6.0 — SIMPLE CONJUGATION FORMULA
+# RETARGETING ENGINE v6.1 — HIERARCHICAL FORMULA WITH PARENT CORRECTION
 # ============================================================================
-# v6.0 RETARGETING APPROACH: Simple conjugation (no delta_parent.inverted())
+# v6.1 RETARGETING APPROACH: Correct hierarchical formula
 #
-# THE KEY FIX: The old hierarchical formula used:
-#   pose_delta = ue5_rest.inverted() @ delta_parent.inverted() @ delta_bone @ ue5_rest
+# MATHEMATICAL DERIVATION:
 #
-# This is WRONG because delta_parent.inverted() double-corrects for the parent's
-# rotation change. Blender's pose evaluation already handles the parent chain when
-# you set each bone's rotation_quaternion independently — each bone's local
-# rotation is composed with its parent's world transform automatically.
-#
-# The CORRECT formula for ALL bones (root, children, everything) is the simple
-# conjugation:
-#   pose_delta = ref_rest.inverted() @ delta_bone @ ref_rest
+# In Blender, a bone's world (armature-local) rotation is computed as:
+#   child_world = parent_world @ local_rest @ rotation_quat
 #
 # Where:
-#   delta_bone = bvh_curr_world_rot @ bvh_ref_world_rot.inv()
-#     — the armature-local (world-space within the armature) rotation delta
-#   ref_rest = pb.bone.matrix_local.to_3x3()
-#     — the target bone's T-pose orientation in armature-local space
+#   parent_world  = parent bone's current world rotation
+#   local_rest    = child bone's rest rotation relative to parent
+#                   = parent.bone.matrix_local.inv() @ child.bone.matrix_local
+#   rotation_quat = what we set via pb.rotation_quaternion
 #
-# Why this works:
-# 1. delta_bone represents the absolute rotation change of the BVH bone in
-#    world/armature space
-# 2. Conjugating by ref_rest.inv() ... ref_rest converts this delta into the
-#    target bone's local space
-# 3. Blender's pose system then correctly composes this with the parent chain
-#    during evaluation — there is no need to manually subtract parent deltas
+# We want: child_world = delta_child @ child_rest_world
+# Where delta_child = BVH bone's world-space rotation delta from reference.
 #
-# Root bone handling:
-# - Mixamo (root = Hips): Apply simple conjugation for rotation, transfer Hips
-#   world displacement as root motion translation, apply forward direction correction
-# - UE5 (root is separate "root" bone): Apply only root motion translation (no
-#   rotation) to the root bone, all other bones use simple conjugation
+# For the ROOT bone (no parent):
+#   root_world = root_local_rest @ rotation_quat
+#   rotation_quat = root_local_rest.inv() @ delta_root @ root_local_rest
+#   This is the SIMPLE CONJUGATION formula — correct for root bones only.
+#
+# For a CHILD bone:
+#   parent_world = delta_parent @ parent_rest_world  (already retargeted)
+#   local_rest = parent_rest_world.inv() @ child_rest_world
+#
+#   rotation_quat = (parent_world @ local_rest).inv() @ desired_world
+#                 = (delta_parent @ child_rest_world).inv() @ delta_child @ child_rest_world
+#                 = child_rest_world.inv() @ delta_parent.inv() @ delta_child @ child_rest_world
+#
+# This is the HIERARCHICAL formula with delta_parent.inv()!
+#
+# WHY v6.0 WAS WRONG:
+#   v6.0 used the simple conjugation for ALL bones:
+#     rotation_quat = ref_rest.inv() @ delta_child @ ref_rest
+#   For a child bone, this produces:
+#     child_world = delta_parent @ delta_child @ child_rest_world
+#   The parent's delta is DOUBLED — the character collapses/folds!
+#
+# WHY v5.0 WAS ALSO WRONG:
+#   v5.0 used: ref_rest.inv() @ delta_parent.inv() @ delta_child @ ref_rest
+#   The formula IS correct in theory, but delta_parent was computed from
+#   the BVH PARENT BONE, not from the BVH bone mapped to the TARGET parent.
+#   When hierarchies don't perfectly align, this produces wrong delta_parent.
+#
+# v6.1 FIX:
+#   We compute each bone's DESIRED world rotation = delta @ ref_rest_world,
+#   then back-compute rotation_quaternion using the CORRECT parent chain.
+#   We track the parent's desired world rotation as we process bones in
+#   hierarchy order, so the parent correction is always exact.
 #
 # BVH source variants handled:
 # - Standard BVH (LeftToeBase) and SOMA-style BVH (LeftToe) both map correctly
@@ -489,17 +505,17 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     """Retarget animation from BVH armature to reference armature.
 
-    Strategy: SIMPLE CONJUGATION — same formula for ALL bones.
+    Strategy: HIERARCHICAL FORMULA WITH PARENT CORRECTION.
     For each frame and each mapped bone:
-      1. Compute BVH armature-local delta: delta_bone = curr @ ref.inv()
-      2. Convert delta to target bone's local space via conjugation:
-         pose_delta = ref_rest.inv() @ delta_bone @ ref_rest
-      3. Set pb.rotation_quaternion from pose_delta
+      1. Compute BVH world-space delta: delta = curr @ ref.inv()
+      2. Compute desired world rotation: desired = delta @ ref_rest_world
+      3. Back-compute rotation_quaternion from desired world rotation:
+         - Root: rotation_quat = ref_rest.inv() @ delta @ ref_rest
+         - Child: rotation_quat = (parent_curr_world @ local_rest).inv() @ desired
+      4. Track desired world rotation for children to use as parent_curr_world
 
-    This approach works because Blender's pose evaluation automatically composes
-    each bone's local rotation with its parent chain. The old hierarchical formula
-    that used delta_parent.inverted() was double-correcting for parent rotation,
-    producing incorrect results for child bones.
+    This approach correctly handles the parent chain, unlike v6.0's simple
+    conjugation which doubled parent deltas for child bones.
 
     Args:
         bvh_armature: Blender armature with BVH animation
@@ -559,11 +575,17 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         bvh_ref_pos[pb.name] = pb.matrix.translation.copy()
 
     # =========================================================================
-    # STEP 2: Capture target rest pose (armature-local)
+    # STEP 2: Capture target rest pose (armature-local world + local relative)
     # =========================================================================
-    ref_rest_rot = {}
+    ref_rest_world = {}  # Bone's rest rotation in armature-local (world) space
+    ref_local_rest = {}  # Bone's rest rotation relative to its parent
     for pb in ref_armature.pose.bones:
-        ref_rest_rot[pb.name] = pb.bone.matrix_local.to_3x3().copy()
+        ref_rest_world[pb.name] = pb.bone.matrix_local.to_3x3().copy()
+        if pb.parent:
+            parent_rest = pb.parent.bone.matrix_local.to_3x3()
+            ref_local_rest[pb.name] = parent_rest.inverted() @ pb.bone.matrix_local.to_3x3().copy()
+        else:
+            ref_local_rest[pb.name] = pb.bone.matrix_local.to_3x3().copy()
 
     # BVH Hips reference position for root motion
     bvh_hips_ref_pos = None
@@ -644,12 +666,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         print(f"[BVH2FBX] Unmapped: {unmapped_bones}")
 
     # =========================================================================
-    # STEP 7: Main retargeting loop — SIMPLE CONJUGATION FORMULA
+    # STEP 7: Main retargeting loop — HIERARCHICAL FORMULA
     # =========================================================================
     # Diagnostic bones to log on the first frame (key bones for debugging)
     diagnostic_bones = ['Hips', 'Spine', 'Head', 'LeftUpLeg', 'LeftLeg',
                         'LeftFoot', 'LeftToeBase', 'LeftToe',
                         'mixamorig:Hips', 'mixamorig:Spine', 'mixamorig:Head',
+                        'mixamorig:LeftUpLeg', 'mixamorig:LeftLeg',
+                        'mixamorig:LeftFoot',
                         'pelvis', 'spine_01', 'head', 'thigh_l', 'calf_l',
                         'foot_l', 'ball_l']
 
@@ -659,57 +683,46 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         bpy.context.view_layer.update()
 
         # --- Compute BVH armature-local deltas for all bones ---
-        # delta_bone = curr_world_rot @ ref_world_rot.inv()
-        # This is the absolute rotation change in armature-local (world) space
+        # delta = curr_world_rot @ ref_world_rot.inv()
         bvh_delta = {}
         for pb in bvh_armature.pose.bones:
             curr = pb.matrix.to_3x3().copy()
             ref = bvh_ref_rot.get(pb.name, I3)
             bvh_delta[pb.name] = curr @ ref.inverted()
 
+        # --- Track desired world rotations for parent chain ---
+        # desired_world[pb.name] = delta @ ref_rest_world
+        # This is the exact world rotation we want each bone to have
+        desired_world = {}
+
         # --- Diagnostic logging on first frame ---
         if fi == 0:
-            print("[BVH2FBX] === DIAGNOSTIC: First frame delta values ===")
+            print("[BVH2FBX] === DIAGNOSTIC: First frame BVH deltas ===")
             for diag_name in diagnostic_bones:
                 if diag_name in bvh_delta:
                     d = bvh_delta[diag_name]
                     q = d.to_quaternion()
                     angle = math.degrees(2 * math.acos(min(1.0, abs(q.w))))
                     print(f"  BVH delta '{diag_name}': quat=({q.x:.4f}, {q.y:.4f}, {q.z:.4f}, {q.w:.4f}) angle={angle:.1f}deg")
-            # Also log ref_rest for a few target bones
-            print("[BVH2FBX] === DIAGNOSTIC: Target rest rotations ===")
-            for diag_name in diagnostic_bones:
-                if diag_name in ref_rest_rot:
-                    r = ref_rest_rot[diag_name]
-                    rq = r.to_quaternion()
-                    angle = math.degrees(2 * math.acos(min(1.0, abs(rq.w))))
-                    print(f"  ref_rest '{diag_name}': quat=({rq.x:.4f}, {rq.y:.4f}, {rq.z:.4f}, {rq.w:.4f}) angle={angle:.1f}deg")
-            # Log pose_delta for mapped bones on first frame
-            print("[BVH2FBX] === DIAGNOSTIC: First frame pose_delta (simple conjugation) ===")
-            for ref_name, bvh_name in bone_map.items():
-                if bvh_name in bvh_delta and ref_name in ref_rest_rot:
-                    delta_bone = bvh_delta[bvh_name]
-                    ref_rest = ref_rest_rot[ref_name]
-                    pose_delta = ref_rest.inverted() @ delta_bone @ ref_rest
-                    pq = pose_delta.to_quaternion()
-                    angle = math.degrees(2 * math.acos(min(1.0, abs(pq.w))))
-                    print(f"  pose_delta '{ref_name}' <- '{bvh_name}': quat=({pq.x:.4f}, {pq.y:.4f}, {pq.z:.4f}, {pq.w:.4f}) angle={angle:.1f}deg")
 
         # --- Handle root bone ---
         root_pb = ref_armature.pose.bones.get(root_bone_name)
         if root_pb:
             if root_is_mapped and root_bvh_name:
                 # Root IS a mapped bone (e.g., Mixamo: Hips = root)
-                # Apply the same simple conjugation formula for rotation
                 delta_root = bvh_delta.get(root_bvh_name, I3)
-                root_rest = ref_rest_rot.get(root_bone_name, I3)
+                root_rest = ref_rest_world.get(root_bone_name, I3)
 
-                # Simple conjugation formula (same for ALL bones)
-                pose_delta = root_rest.inverted() @ delta_root @ root_rest
-                q = pose_delta.to_quaternion()
+                # For root bone: rotation_quat = root_rest.inv() @ delta @ root_rest
+                # This is the simple conjugation — correct for root bones (no parent)
+                rotation_quat = root_rest.inverted() @ delta_root @ root_rest
+                q = rotation_quat.to_quaternion()
                 if q.w < 0:
                     q = -q
                 root_pb.rotation_quaternion = q
+
+                # Compute desired world rotation for children
+                desired_world[root_bone_name] = delta_root @ root_rest
 
                 # Root motion translation from Hips displacement
                 if bvh_hips and bvh_hips_ref_pos:
@@ -721,6 +734,9 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                     root_pb.location = (0, 0, 0)
             else:
                 # Root NOT mapped (UE5 style) — only translation, no rotation
+                desired_world[root_bone_name] = ref_rest_world.get(root_bone_name, I3)
+                root_pb.rotation_quaternion = (1, 0, 0, 0)
+
                 if bvh_hips and bvh_hips_ref_pos:
                     hips_pos = bvh_hips.matrix.translation
                     disp = hips_pos - bvh_hips_ref_pos
@@ -728,7 +744,6 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                     root_pb.location = disp_corrected * scale_factor
                 else:
                     root_pb.location = (0, 0, 0)
-                root_pb.rotation_quaternion = (1, 0, 0, 0)
 
             root_pb.keyframe_insert(data_path='location', frame=fi, group=root_bone_name)
             root_pb.keyframe_insert(data_path='rotation_quaternion', frame=fi, group=root_bone_name)
@@ -741,29 +756,51 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             bvh_name = bone_map.get(pb.name)
 
             if bvh_name and bvh_name in bvh_armature.pose.bones:
-                # MAPPED BONE: Simple conjugation formula
-                # THE KEY FIX: No delta_parent.inverted()!
-                # Blender's pose evaluation handles the parent chain automatically.
-                # We only need to convert the armature-local delta into the target
-                # bone's local space via conjugation:
-                #   pose_delta = ref_rest.inv() @ delta_bone @ ref_rest
+                # MAPPED BONE: Hierarchical formula with parent correction
                 delta_bone = bvh_delta.get(bvh_name, I3)
-                ref_rest = ref_rest_rot.get(pb.name, I3)
+                bone_rest = ref_rest_world.get(pb.name, I3)
 
-                pose_delta = ref_rest.inverted() @ delta_bone @ ref_rest
+                # Desired world rotation = apply BVH delta to target rest
+                desired = delta_bone @ bone_rest
+                desired_world[pb.name] = desired
 
-                q = pose_delta.to_quaternion()
+                # Compute rotation_quaternion from desired world rotation
+                # Formula: rotation_quat = (parent_curr @ local_rest).inv() @ desired
+                if pb.parent and pb.parent.name in desired_world:
+                    parent_curr = desired_world[pb.parent.name]
+                    local_rest = ref_local_rest.get(pb.name, I3)
+                    rotation_quat = (parent_curr @ local_rest).inverted() @ desired
+                else:
+                    # No parent info — fallback to simple conjugation
+                    rotation_quat = bone_rest.inverted() @ delta_bone @ bone_rest
+
+                q = rotation_quat.to_quaternion()
                 if q.w < 0:
                     q = -q
                 pb.rotation_quaternion = q
                 pb.location = (0, 0, 0)
             else:
                 # UNMAPPED BONE: Keep rest pose
+                desired_world[pb.name] = ref_rest_world.get(pb.name, I3)
                 pb.rotation_quaternion = (1, 0, 0, 0)
                 pb.location = (0, 0, 0)
 
             pb.keyframe_insert(data_path='rotation_quaternion', frame=fi, group=pb.name)
             pb.keyframe_insert(data_path='location', frame=fi, group=pb.name)
+
+        # --- Diagnostic for first frame: verify world rotations ---
+        if fi == 0:
+            print("[BVH2FBX] === DIAGNOSTIC: First frame rotation_quat vs desired_world ===")
+            for ref_name, bvh_name in bone_map.items():
+                if ref_name in desired_world and ref_name in ref_local_rest:
+                    dw = desired_world[ref_name]
+                    dwq = dw.to_quaternion()
+                    angle = math.degrees(2 * math.acos(min(1.0, abs(dwq.w))))
+                    parent_info = ""
+                    pb_ref = ref_armature.pose.bones.get(ref_name)
+                    if pb_ref and pb_ref.parent:
+                        parent_info = f" parent={pb_ref.parent.name}"
+                    print(f"  desired_world '{ref_name}' <- '{bvh_name}': quat=({dwq.x:.4f}, {dwq.y:.4f}, {dwq.z:.4f}, {dwq.w:.4f}) angle={angle:.1f}deg{parent_info}")
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
