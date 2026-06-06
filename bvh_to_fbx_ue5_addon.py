@@ -1,8 +1,8 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v6",
-    "version": (6, 0, 0),
-    "blender": (3, 0, 0),
+    "version": (6, 0, 1),
+    "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
     "category": "Animation",
@@ -1270,7 +1270,7 @@ class BVH2FBX_PT_info_panel(bpy.types.Panel):
         # BVH axis info
         if props.bvh_filepath and os.path.isfile(props.bvh_filepath):
             axis_fwd, axis_up = detect_bvh_axis_convention(props.bvh_filepath)
-            layout.label(text=f"BVH оси: up={axis_up}, fwd={axis_fwd}", icon='ORIENTATION_GLOBAL')
+            layout.label(text=f"BVH оси: up={axis_up}, fwd={axis_fwd}", icon='WORLD')
         else:
             layout.label(text="BVH не выбран", icon='QUESTION')
 
@@ -1290,7 +1290,7 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
 
         layout.label(text=f"Версия: {version_to_string(CURRENT_VERSION)}")
 
-        layout.operator("bvh2fbx.check_updates", icon='URL')
+        layout.operator("bvh2fbx.check_updates", icon='WORLD')
 
         if props.update_status:
             layout.label(text=props.update_status)

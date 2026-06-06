@@ -14,3 +14,14 @@ Thumbs.db
 *.bak
 *.swp
 *~
+
+# Workspace directories — NOT part of the addon
+download/
+skills/
+python/
+fbx_analyzer.py
+fbx_results.txt
+.env
+video_frames/
+video_frames2/
+agent-ctx/
