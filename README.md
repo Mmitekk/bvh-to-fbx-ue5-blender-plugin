@@ -1,7 +1,7 @@
 # BVH to FBX for UE5 — Blender Plugin
 
 [![GitHub release](https://img.shields.io/github/v/release/Mmitekk/bvh-to-fbx-ue5-blender-plugin?include_prereleases)](https://github.com/Mmitekk/bvh-to-fbx-ue5-blender-plugin/releases)
-[![Blender](https://img.shields.io/badge/Blender-3.0%2B-orange)](https://www.blender.org/)
+[![Blender](https://img.shields.io/badge/Blender-4.0%2B-orange)](https://www.blender.org/)
 [![Unreal Engine](https://img.shields.io/badge/UE-5.0%2B-blue)](https://www.unrealengine.com/)
 
 A Blender addon that converts BVH motion capture files to FBX animation for **Unreal Engine 5**, with **Root Motion preservation** and automatic bone retargeting onto the UE5 Quinn skeleton.
@@ -14,7 +14,7 @@ A Blender addon that converts BVH motion capture files to FBX animation for **Un
 
 - **BVH → FBX conversion** with automatic skeleton retargeting onto the UE5 Quinn (mannequin) bone hierarchy
 - **Root Motion preservation** — the root bone translation is extracted from BVH Hips displacement and baked into the UE5 `root` bone, so animations work correctly with UE5's Root Motion system
-- **Multiple BVH naming conventions** supported: standard BVH, Mixamo (`mixamorig:` prefix)
+- **Multiple BVH naming conventions** supported: standard BVH (SOMA/Kimodo), Mixamo (`mixamorig:` prefix)
 - **Comprehensive bone mapping** — over 70 bone name mappings covering spine, head, arms, fingers, legs, and toes
 - **World-space rotation delta retargeting** — computes rotation deltas from BVH rest pose and applies them to UE5 rest pose for accurate pose transfer
 - **Scale factor control** for Root Motion translation (e.g., BVH centimeters → UE5 meters with scale 0.01)
@@ -98,7 +98,7 @@ Mixamo naming is also supported (e.g., `mixamorig:Hips` → `pelvis`).
 
 ### Requirements
 
-- Blender 3.0 or later
+- Blender 4.0 or later (compatible with Blender 5.x)
 - Internet connection (for the auto-update feature only)
 
 ### Troubleshooting
@@ -116,7 +116,7 @@ Mixamo naming is also supported (e.g., `mixamorig:Hips` → `pelvis`).
 
 - **Конвертация BVH → FBX** с автоматическим ретаргетингом скелета на иерархию костей UE5 Quinn (манекен)
 - **Сохранение Root Motion** — перемещение корневой кости извлекается из смещения BVH Hips и запекается в кость `root` UE5, поэтому анимации корректно работают с системой Root Motion в UE5
-- **Поддержка различных соглашений об именах BVH**: стандартный BVH, Mixamo (префикс `mixamorig:`)
+- **Поддержка различных соглашений об именах BVH**: стандартный BVH (SOMA/Kimodo), Mixamo (префикс `mixamorig:`)
 - **Расширенное отображение костей** — более 70 соответствий имён костей, покрывающих позвоночник, голову, руки, пальцы, ноги и стопы
 - **Ретаргетинг через мировые дельты вращений** — вычисляются дельты вращений от позы покоя BVH и применяются к позе покоя UE5 для точной передачи поз
 - **Управление масштабом** Root Motion (например, BVH сантиметры → UE5 метры с масштабом 0.01)
@@ -200,7 +200,7 @@ Mixamo naming is also supported (e.g., `mixamorig:Hips` → `pelvis`).
 
 ### Системные требования
 
-- Blender 3.0 или новее
+- Blender 4.0 или новее (совместим с Blender 5.x)
 - Интернет-соединение (только для функции автообновления)
 
 ### Решение проблем
