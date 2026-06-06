@@ -1297,7 +1297,7 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
 
         if len(props.available_versions) > 0:
             layout.prop(props, "selected_version_index", text="Версия")
-            layout.operator("bvh2fbx.install_update", icon='DOWN')
+            layout.operator("bvh2fbx.install_update", icon='IMPORT')
 
 
 # ============================================================================
