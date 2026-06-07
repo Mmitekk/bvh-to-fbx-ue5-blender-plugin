@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v8.3",
-    "version": (8, 3, 0),
+    "author": "BVH2FBX Converter v9.0",
+    "version": (9, 0, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -608,72 +608,54 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 
 
 # ============================================================================
-# RETARGETING ENGINE v8.2 — LOCAL ROTATION DELTA TRANSFER
+# RETARGETING ENGINE v9.0 — CONJUGATION-BASED ROTATION TRANSFER
 # ============================================================================
-# v8.2 APPROACH: Transfer LOCAL rotation deltas from BVH to target.
-#
-# KEY INSIGHT: Previous approaches (v8.0, v8.1) tried to compute desired
-# WORLD rotations and then derive local rotation_quaternion. This fails when
-# BVH and target have DIFFERENT rest poses because a world-space rotation
-# delta applied to a different rest pose produces wrong results.
-#
-# The correct approach: compute each bone's LOCAL rotation delta (how much
-# it has rotated FROM its rest pose, RELATIVE to its parent), then set
-# that SAME local delta as the target bone's rotation_quaternion.
+# v9.0 APPROACH: Conjugate BVH world rotation through TARGET rest local matrix.
 #
 # MATHEMATICAL DERIVATION:
 #
 # In Blender, pose evaluation for bone B with parent P:
 #   B.matrix = P.matrix @ B.bone.matrix_local @ Rot(q)
 #
-# For BVH source bone bvh_B with parent bvh_P:
-#   bvh_curr_local = bvh_P_curr^(-1) @ bvh_B_curr  (current local rotation)
-#   bvh_rest_local = bvh_P_rest^(-1) @ bvh_B_rest  (rest local rotation)
-#   bvh_local_delta = bvh_rest_local^(-1) @ bvh_curr_local
+# We want the target bone to have the same WORLD orientation as the BVH bone
+# (with forward correction for root). This means:
 #
-# This bvh_local_delta represents "how much the BVH bone has rotated from
-# its rest pose, in its parent's frame." This is exactly the animation
-# data we want to transfer.
+#   target_B.matrix = fwd_rot @ bvh_B.matrix    (for ALL bones)
 #
-# For target bone with the SAME parent mapping:
-#   Rot(q) = bvh_local_delta
+# For root bone (no parent):
+#   target_bone.matrix_local @ Rot(q) = fwd_rot @ bvh_curr
+#   Rot(q) = target_rest_local^(-1) @ fwd_rot @ bvh_curr
 #
-# ROOT BONE SPECIAL CASE:
-#   For the root bone (no parent), the local delta is computed in world space:
-#   bvh_local_delta = bvh_rest_world^(-1) @ fwd_rot @ bvh_curr_world
+# For child bone with parent P:
+#   target_B.matrix = target_P.matrix @ target_B.bone.matrix_local @ Rot(q)
 #
-# BVH 2-LEVEL ROOT HANDLING:
-#   SOMA BVH has Root -> Hips. Mixamo has Hips as root.
-#   For mixamorig:Hips (root, mapped to BVH Hips):
-#   - BVH Hips world rotation includes Root's heading rotation
-#   - R_local_delta_root = BVH_Hips_rest^(-1) @ fwd_rot @ BVH_Hips_curr
-#   - For child bones, the BVH parent is used to compute local deltas,
-#     which automatically excludes the heading (it cancels in the parent chain)
+# Since target_P.matrix = fwd_rot @ bvh_P_curr (by induction):
+#   fwd_rot @ bvh_P_curr @ target_rest_local @ Rot(q) = fwd_rot @ bvh_B_curr
+#   target_rest_local @ Rot(q) = bvh_P_curr^(-1) @ bvh_B_curr
+#   Rot(q) = target_rest_local^(-1) @ bvh_P_curr^(-1) @ bvh_B_curr
 #
-# WHY PREVIOUS APPROACHES FAILED:
-#   v8.0: Used animated first frame as reference -> delta=I on frame 0,
-#         only motion CHANGE was transferred, not full animation.
-#         Result: "no animation, only movement"
-#   v8.1: Used bone.matrix_local as reference -> huge incorrect deltas
-#         because BVH rest and Mixamo rest have very different orientations.
-#         The formula fwd_rot @ delta @ target_rest applied a world-space
-#         delta to target_rest, which is wrong when rest poses differ.
-#         Result: "character lying horizontally with deformed bones"
-#   v8.2: Uses LOCAL delta approach -> correctly transfers animation
-#         regardless of rest pose differences.
+# The fwd_rot cancels out for child bones — only the root needs it.
+#
+# KEY CORRECTION vs v8.2:
+#   v8.2 used bvh_rest^(-1) (BVH rest local) instead of target_rest_local^(-1).
+#   This is WRONG when BVH and target have different rest poses (different bone
+#   axis orientations). The result was "character lying horizontally with
+#   deformed bones" because the BVH rest orientation was used to decode the
+#   rotation into the target bone's local frame.
+#
+#   v9.0 uses target_rest_local^(-1) which correctly converts the BVH world
+#   rotation into the TARGET bone's local rotation space, accounting for the
+#   different bone axis orientations in the two skeletons.
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     """Retarget animation from BVH armature to reference armature.
 
-    Strategy: LOCAL ROTATION DELTA TRANSFER
+    Strategy: CONJUGATION-BASED ROTATION TRANSFER (v9.0)
     For each frame:
       1. Capture BVH bones' current world rotations
       2. For each target bone in hierarchy order:
-         a. ROOT: Rot(q) = bvh_rest^(-1) @ fwd_rot @ bvh_curr
-         b. CHILD: Compute bvh_local_delta = rest_local^(-1) @ curr_local
-            where curr_local = bvh_parent_curr^(-1) @ bvh_curr
-            and   rest_local = bvh_parent_rest^(-1) @ bvh_rest
-         c. Set Rot(q) = bvh_local_delta
+         ROOT:  Rot(q) = target_rest_local^(-1) @ fwd_rot @ bvh_curr
+         CHILD: Rot(q) = target_rest_local^(-1) @ bvh_parent_curr^(-1) @ bvh_curr
       3. Root motion displacement from BVH root motion bone
 
     Args:
@@ -737,11 +719,13 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     print(f"[BVH2FBX] Root bone: {root_bone_name} (mapped={root_is_mapped}, bvh={root_bvh_name})")
 
     # =========================================================================
-    # STEP 1: Capture BVH REST pose world rotations (bone.matrix_local)
+    # STEP 1: Capture TARGET rest local rotations (bone.matrix_local)
     # =========================================================================
-    bvh_rest_world = {}
-    for pb in bvh_armature.pose.bones:
-        bvh_rest_world[pb.name] = pb.bone.matrix_local.to_3x3().copy()
+    # This is the key difference from v8.2: we use the TARGET skeleton's
+    # rest pose, not the BVH skeleton's rest pose, for the conjugation.
+    target_rest_local = {}
+    for pb in ref_armature.pose.bones:
+        target_rest_local[pb.name] = pb.bone.matrix_local.to_3x3().copy()
 
     # Capture BVH first-frame positions for root motion reference
     scene.frame_set(frame_start)
@@ -845,7 +829,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         print(f"[BVH2FBX] Unmapped: {unmapped_bones}")
 
     # =========================================================================
-    # STEP 6: Main retargeting loop - LOCAL ROTATION DELTA TRANSFER
+    # STEP 6: Main retargeting loop — CONJUGATION-BASED TRANSFER
     # =========================================================================
 
     # For quaternion sign consistency across frames (prevents flipping)
@@ -872,34 +856,29 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                 bvh_parent_name = bone_map.get(ref_pb.parent.name) if ref_pb and ref_pb.parent else None
                 print(f"  {ref_name} <- {bvh_name} (bvh_parent={bvh_parent_name})")
 
-            print("[BVH2FBX] === DIAGNOSTIC: BVH rest vs first-frame rotations ===")
-            for bname in sorted(bvh_rest_world.keys()):
-                rest = bvh_rest_world[bname]
-                curr = bvh_curr_world.get(bname, I3)
-                delta = curr @ rest.inverted()
-                q = delta.to_quaternion()
-                angle = math.degrees(2 * math.acos(min(1.0, abs(q.w))))
-                print(f"  BVH '{bname}': rest->curr angle={angle:.1f}deg")
+            print("[BVH2FBX] === DIAGNOSTIC: Target rest local axes ===")
+            for pb in hierarchy_bones[:5]:
+                rl = target_rest_local[pb.name]
+                # Extract forward axis (typically -Y for Blender bones)
+                print(f"  '{pb.name}': local axes = X({rl[0][0]:.2f},{rl[1][0]:.2f},{rl[2][0]:.2f}) "
+                      f"Y({rl[0][1]:.2f},{rl[1][1]:.2f},{rl[2][1]:.2f}) "
+                      f"Z({rl[0][2]:.2f},{rl[1][2]:.2f},{rl[2][2]:.2f})")
 
         # --- Process ALL target bones in hierarchy order ---
         for pb in hierarchy_bones:
             bvh_name = bone_map.get(pb.name)
             is_root = (pb.parent is None)
             is_mapped = (bvh_name is not None and bvh_name in bvh_curr_world
-                         and bvh_name in bvh_rest_world)
+                         and pb.name in target_rest_local)
 
             if is_root:
                 # ---- ROOT BONE ----
                 if is_mapped:
-                    # Root bone: local delta in world space with forward correction
-                    # Rot(q) = bvh_rest^(-1) @ fwd_rot @ bvh_curr
-                    # Result: target_rest @ Rot(q) = target_rest @ bvh_rest^(-1) @ fwd_rot @ bvh_curr
-                    # This is the conjugation formula: re-express the BVH world rotation
-                    # (with forward correction) from BVH rest space to target rest space.
-                    R_local_delta = (bvh_rest_world[bvh_name].inverted()
-                                     @ fwd_rot_3x3
-                                     @ bvh_curr_world[bvh_name])
-                    q = R_local_delta.to_quaternion()
+                    # Root: Rot(q) = target_rest_local^(-1) @ fwd_rot @ bvh_curr
+                    R_local = (target_rest_local[pb.name].inverted()
+                               @ fwd_rot_3x3
+                               @ bvh_curr_world[bvh_name])
+                    q = R_local.to_quaternion()
                 else:
                     # Unmapped root: identity rotation
                     q = mathutils.Quaternion((1, 0, 0, 0))
@@ -919,28 +898,30 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             else:
                 # ---- CHILD BONE ----
                 if is_mapped:
-                    # Find the BVH parent bone name (through the Mixamo parent mapping)
+                    # Find the BVH parent bone name (through the target parent mapping)
                     bvh_parent_name = bone_map.get(pb.parent.name)
 
                     if (bvh_parent_name
-                            and bvh_parent_name in bvh_curr_world
-                            and bvh_parent_name in bvh_rest_world):
-                        # Normal case: BVH parent is mapped
-                        # Compute LOCAL rotation delta relative to parent
-                        # rest_local = bvh_parent_rest^(-1) @ bvh_bone_rest
-                        # curr_local = bvh_parent_curr^(-1) @ bvh_bone_curr
-                        # local_delta = rest_local^(-1) @ curr_local
-                        R_rest_local = (bvh_rest_world[bvh_parent_name].inverted()
-                                        @ bvh_rest_world[bvh_name])
-                        R_curr_local = (bvh_curr_world[bvh_parent_name].inverted()
-                                        @ bvh_curr_world[bvh_name])
-                        R_local_delta = R_rest_local.inverted() @ R_curr_local
+                            and bvh_parent_name in bvh_curr_world):
+                        # Normal case: mapped BVH parent
+                        # Rot(q) = target_rest_local^(-1) @ bvh_parent_curr^(-1) @ bvh_curr
+                        R_local = (target_rest_local[pb.name].inverted()
+                                   @ bvh_curr_world[bvh_parent_name].inverted()
+                                   @ bvh_curr_world[bvh_name])
                     else:
-                        # Fallback: parent not mapped, use world rotation delta
-                        R_local_delta = (bvh_rest_world[bvh_name].inverted()
-                                         @ bvh_curr_world[bvh_name])
+                        # Fallback: use BVH bone's actual parent
+                        bvh_pb = bvh_armature.pose.bones.get(bvh_name)
+                        if (bvh_pb and bvh_pb.parent
+                                and bvh_pb.parent.name in bvh_curr_world):
+                            R_local = (target_rest_local[pb.name].inverted()
+                                       @ bvh_curr_world[bvh_pb.parent.name].inverted()
+                                       @ bvh_curr_world[bvh_name])
+                        else:
+                            # Last fallback: world rotation with target rest
+                            R_local = (target_rest_local[pb.name].inverted()
+                                       @ bvh_curr_world[bvh_name])
 
-                    q = R_local_delta.to_quaternion()
+                    q = R_local.to_quaternion()
                 else:
                     # Unmapped bone: identity (rest pose)
                     q = mathutils.Quaternion((1, 0, 0, 0))
