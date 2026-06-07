@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v13.2",
-    "version": (13, 2, 0),
+    "author": "BVH2FBX Converter v14.0",
+    "version": (14, 0, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -409,50 +409,44 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 
 
 # ============================================================================
-# RETARGETING ENGINE v13.0 — REST-POSE COMPOSITION
+# RETARGETING ENGINE v14.0 — CONSTRAINT-BASED BAKE
 # ============================================================================
 #
-# WHY v12.0 FAILED (conjugation bug):
+# WHY v4-v13 ALL FAILED (manual quaternion math):
 #
-# v12.0 used quaternion conjugation: mix_quat = Q @ bvh_quat @ Q^-1
-# This is mathematically WRONG for retargeting.
+# Every version from v4 to v13 tried to compute retargeting with manual
+# quaternion/matrix formulas. Despite the math being theoretically correct,
+# the results were always distorted because:
 #
-# Conjugation (Q @ q @ Q^-1) changes the BASIS of a rotation transform.
-# But retargeting requires COMPOSITION of rotations, not basis change.
+# 1. Extracting quaternions from matrices via decompose() loses precision
+# 2. Quaternion sign ambiguity causes interpolation artifacts
+# 3. The formula mix_quat = Q @ bvh_quat is correct per-bone in isolation
+#    but accumulated error propagates down the parent chain
+# 4. Q=106.8° for Hips means a HUGE rotation correction that amplifies
+#    any numerical imprecision
 #
-# THE CORRECT FORMULA (v13.0):
+# THE v14.0 APPROACH — CONSTRAINT-BASED BAKE:
 #
-# We need: mix_rest_rot @ mix_basis_rot = bvh_rest_rot @ bvh_basis_rot
-#   (same world-space rotation on both skeletons)
+# Instead of manual math, we use Blender's own constraint system:
+# 1. Add Copy Rotation constraint (WORLD→WORLD) on each Mixamo bone
+#    targeting the corresponding BVH bone
+# 2. Add Copy Location constraint (WORLD→WORLD) for the root bone
+# 3. Blender's depsgraph evaluates constraints in correct parent→child
+#    order, handling ALL coordinate space conversions automatically
+# 4. We read the VISUAL (constrained) result and bake to keyframes
+# 5. Remove constraints after baking
 #
-# Solving: mix_basis_rot = mix_rest_rot^-1 @ bvh_rest_rot @ bvh_basis_rot
-#        = Q @ bvh_basis_rot
-#   where Q = mix_rest_rot^-1 @ bvh_rest_rot
-#
-# This is SIMPLE MULTIPLICATION, not conjugation!
-#
-# For root bone: Q = mix_global_rest^-1 @ bvh_global_rest
-# For child bone: Q = mix_chain_rest^-1 @ bvh_chain_rest
-#   where chain_rest = parent.matrix_local^-1 @ child.matrix_local
-#
-# For root location:
-#   mix_loc = Q @ bvh_loc  (rotate location vector by Q)
-#
-# Forward rotation is applied in BONE-LOCAL space (not armature space)
-# to prevent the diagonal walking bug from v7-v11.
+# This is exactly how professional retargeting tools work (Rokoko,
+# Expy Kit, Blender's own NLA bake system).
 #
 
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
-    """Retarget animation using rest-pose composition (v13.0).
+    """Retarget animation using constraint-based bake (v14.0).
 
-    Reads BVH bone's matrix_basis directly and converts rotation to
-    Mixamo bone's local space via composition:
-        mix_quat = Q @ bvh_quat
-    where Q = mix_rest_quat^-1 @ bvh_rest_quat
-
-    This ensures: mix_rest @ mix_quat = bvh_rest @ bvh_quat
-    (same world-space rotation on both skeletons)
+    Uses Blender's Copy Rotation/Location constraints with WORLD→WORLD
+    space to transfer animation from BVH to target skeleton. Blender's
+    depsgraph handles all coordinate space conversions automatically.
 
     Args:
         bvh_armature: Blender armature with BVH animation
@@ -543,7 +537,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                 print(f"[BVH2FBX] Forward correction: {forward_angle:.1f} degrees")
 
     # =========================================================================
-    # STEP 2: Prepare Mixamo armature for retargeting
+    # STEP 2: Prepare Mixamo armature
     # =========================================================================
     try:
         if bpy.context.mode != 'OBJECT':
@@ -568,38 +562,14 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     ref_armature.animation_data.action = new_action
 
     # =========================================================================
-    # STEP 3: Pre-compute rest pose data and conversion quaternions
+    # STEP 3: Add Copy Rotation/Location constraints
     # =========================================================================
-    # BVH rest matrices (bone.matrix_local = rest in armature space)
-    bvh_rest = {}
-    bvh_local_rest = {}  # bone's rest matrix relative to parent
-    for pb in bvh_armature.pose.bones:
-        bvh_rest[pb.name] = pb.bone.matrix_local.copy()
-        if pb.parent:
-            bvh_local_rest[pb.name] = (
-                pb.parent.bone.matrix_local.inverted() @ pb.bone.matrix_local
-            )
-        else:
-            bvh_local_rest[pb.name] = pb.bone.matrix_local.copy()
+    # Using WORLD→WORLD space: Blender's depsgraph evaluates constraints
+    # in correct parent→child order, automatically handling all coordinate
+    # space conversions. This is the same approach used by Rokoko Studio
+    # and other professional retargeting tools.
+    constraints_added = []  # List of (pose_bone, constraint_name) for cleanup
 
-    # Mixamo rest matrices
-    mix_rest = {}
-    mix_local_rest = {}  # bone's rest matrix relative to parent
-    for pb in ref_armature.pose.bones:
-        mix_rest[pb.name] = pb.bone.matrix_local.copy()
-        if pb.parent:
-            mix_local_rest[pb.name] = (
-                pb.parent.bone.matrix_local.inverted() @ pb.bone.matrix_local
-            )
-        else:
-            mix_local_rest[pb.name] = pb.bone.matrix_local.copy()
-
-    # Pre-compute Q quaternion for each mapped bone pair.
-    # Q converts animation rotation from BVH local space to Mixamo local space
-    # via conjugation: mix_quat = Q @ bvh_quat @ Q^-1
-    # For root bone: Q = mix_global_rest_rot^-1 @ bvh_global_rest_rot
-    # For child bone: Q = mix_local_rest_rot^-1 @ bvh_local_rest_rot
-    Q_map = {}  # ref_bone_name -> Q quaternion
     for ref_name, bvh_name in bone_map.items():
         if ref_name not in ref_armature.pose.bones:
             continue
@@ -608,120 +578,106 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
         ref_pb = ref_armature.pose.bones[ref_name]
 
+        # Add Copy Rotation constraint
+        cr = ref_pb.constraints.new('COPY_ROTATION')
+        cr.target = bvh_armature
+        cr.subtarget = bvh_name
+        cr.target_space = 'WORLD'
+        cr.owner_space = 'WORLD'
+        cr.use_x = True
+        cr.use_y = True
+        cr.use_z = True
+        cr.mix_mode = 'REPLACE'
+        constraints_added.append((ref_pb, cr.name))
+
+        # For root bone, also add Copy Location constraint
         if ref_pb.parent is None:
-            # Root bone: use global rest rotation
-            mix_rest_quat = mix_rest[ref_name].to_quaternion()
-            bvh_rest_quat = bvh_rest[bvh_name].to_quaternion()
-        else:
-            # Child bone: use local rest rotation (relative to parent)
-            mix_rest_quat = mix_local_rest[ref_name].to_quaternion()
-            bvh_rest_quat = bvh_local_rest[bvh_name].to_quaternion()
+            cl = ref_pb.constraints.new('COPY_LOCATION')
+            cl.target = bvh_armature
+            cl.subtarget = bvh_name
+            cl.target_space = 'WORLD'
+            cl.owner_space = 'WORLD'
+            cl.use_x = True
+            cl.use_y = True
+            cl.use_z = True
+            cl.mix_mode = 'REPLACE'
+            constraints_added.append((ref_pb, cl.name))
 
-        Q = mix_rest_quat.inverted() @ bvh_rest_quat
-        Q.normalize()
-        Q_map[ref_name] = Q
-
-    # Pre-compute forward rotation in root bone's LOCAL space.
-    # The forward_quat is in armature space, but we need it in the root
-    # bone's local frame so we can apply it directly to rotation_quaternion
-    # and location keyframes. Without this conversion, the forward rotation
-    # was being applied to bone-local values using armature-space rotation,
-    # causing the diagonal walking bug in v7-v11.
-    F_local = None
-    if forward_quat and root_bone_name and root_bone_name in mix_rest:
-        mix_root_rest_quat = mix_rest[root_bone_name].to_quaternion()
-        # Conjugate forward_quat into root bone's local frame:
-        # F_local = mix_rest^-1 @ forward @ mix_rest
-        F_local = mix_root_rest_quat.inverted() @ forward_quat @ mix_root_rest_quat
-        F_local.normalize()
-        print(f"[BVH2FBX] Forward rotation converted to root bone local space")
-
-    # Debug: print Q values for key bones to help diagnose retargeting issues
-    key_bones_debug = ['mixamorig:Hips', 'mixamorig:Spine', 'mixamorig:Head',
-                       'mixamorig:LeftUpLeg', 'mixamorig:RightUpLeg',
-                       'mixamorig:LeftArm', 'mixamorig:RightArm']
-    for kb in key_bones_debug:
-        if kb in Q_map:
-            q = Q_map[kb]
-            angle = math.degrees(2 * math.acos(min(1.0, abs(q.w))))
-            print(f"[BVH2FBX] Q for {kb}: angle={angle:.1f}° axis=({q.axis.x:.2f},{q.axis.y:.2f},{q.axis.z:.2f})")
-
-    # Get bones in hierarchy order
-    ordered_bones = get_bones_in_hierarchy_order(ref_armature)
+    print(f"[BVH2FBX] Added {len(constraints_added)} constraints for {len(bone_map)} bone pairs")
 
     # =========================================================================
-    # STEP 4: Retarget animation frame by frame
+    # STEP 4: Bake animation frame by frame
     # =========================================================================
+    # For each frame, evaluate the depsgraph (which applies constraints),
+    # then read the VISUAL (constrained) bone transforms and bake to keyframes.
     identity_quat = mathutils.Quaternion((1, 0, 0, 0))
     zero_vec = mathutils.Vector((0, 0, 0))
+
+    # Pre-compute Mixamo rest matrices for extracting basis from constrained pose
+    mix_local_rest = {}
+    for pb in ref_armature.pose.bones:
+        if pb.parent:
+            mix_local_rest[pb.name] = (
+                pb.parent.bone.matrix_local.inverted() @ pb.bone.matrix_local
+            )
+        else:
+            mix_local_rest[pb.name] = pb.bone.matrix_local.copy()
+
+    # Track previous quaternion per bone for sign consistency
+    prev_quat = {}
 
     for fi in range(num_frames):
         frame = frame_start + fi
         scene.frame_set(frame)
-        bpy.context.view_layer.update()
 
-        for ref_pb in ordered_bones:
-            if ref_pb.name in bone_map and ref_pb.name in Q_map:
-                bvh_name = bone_map[ref_pb.name]
-                Q = Q_map[ref_pb.name]
+        # Evaluate depsgraph to apply constraints
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        eval_ref = ref_armature.evaluated_get(depsgraph)
 
-                if bvh_name not in bvh_armature.pose.bones:
-                    # BVH bone not found, keep rest pose
-                    ref_pb.rotation_quaternion = identity_quat.copy()
-                    ref_pb.location = zero_vec.copy()
+        for ref_pb in ref_armature.pose.bones:
+            eval_pb = eval_ref.pose.bones.get(ref_pb.name)
+
+            if eval_pb and ref_pb.name in bone_map:
+                # Extract bone-local basis rotation from the constrained pose.
+                # The constrained pose gives us the correct world-space rotation.
+                # We need to convert it back to bone-local space for keyframing.
+                if ref_pb.parent is None:
+                    # Root bone: basis = rest^-1 @ constrained_matrix
+                    rest_mat = ref_pb.bone.matrix_local
+                    basis_mat = rest_mat.inverted() @ eval_pb.matrix
+                    mix_loc, mix_quat, _ = basis_mat.decompose()
                 else:
-                    bvh_pb = bvh_armature.pose.bones[bvh_name]
-
-                    # Read BVH bone's LOCAL animation (matrix_basis).
-                    # This is the animation offset from rest pose,
-                    # in the bone's own local coordinate frame.
-                    bvh_basis = bvh_pb.matrix_basis.copy()
-                    bvh_loc, bvh_quat, _ = bvh_basis.decompose()
-
-                    # Normalize BVH quaternion
-                    if bvh_quat.magnitude > 0.0001:
-                        bvh_quat = bvh_quat.normalized()
+                    # Child bone: need parent's constrained matrix
+                    eval_parent = eval_ref.pose.bones.get(ref_pb.parent.name)
+                    if eval_parent:
+                        local_visual = eval_parent.matrix.inverted() @ eval_pb.matrix
                     else:
-                        bvh_quat = identity_quat.copy()
+                        local_visual = eval_pb.matrix.copy()
+                    local_rest = mix_local_rest.get(ref_pb.name, ref_pb.bone.matrix_local)
+                    basis_mat = local_rest.inverted() @ local_visual
+                    mix_loc, mix_quat, _ = basis_mat.decompose()
 
-                    # Convert rotation to Mixamo bone's local space
-                    # using rest-pose composition:
-                    #   mix_quat = Q @ bvh_quat
-                    # where Q = mix_rest^-1 @ bvh_rest
-                    # This ensures: mix_rest @ mix_quat = bvh_rest @ bvh_quat
-                    # (same world-space rotation on both skeletons)
-                    mix_quat = Q @ bvh_quat
-                    mix_quat.normalize()
+                # Normalize quaternion
+                if mix_quat.magnitude > 0.0001:
+                    mix_quat = mix_quat.normalized()
+                else:
+                    mix_quat = identity_quat.copy()
 
-                    if ref_pb.parent is None:
-                        # Root bone: also convert location.
-                        # The BVH root's location is in BVH root's local frame,
-                        # we need it in Mixamo root's local frame:
-                        #   mix_loc = Q @ bvh_loc
-                        mix_loc = Q @ bvh_loc
+                # Ensure consistent quaternion sign across frames
+                # to prevent interpolation artifacts (taking the "long way")
+                if ref_pb.name in prev_quat:
+                    if mix_quat.dot(prev_quat[ref_pb.name]) < 0:
+                        mix_quat = -mix_quat
+                prev_quat[ref_pb.name] = mix_quat.copy()
 
-                        # Apply forward rotation in BONE-LOCAL space.
-                        # This fixes the diagonal walking bug from v7-v11
-                        # where forward rotation was incorrectly applied
-                        # in armature space to bone-local keyframe values.
-                        if F_local:
-                            mix_quat = F_local @ mix_quat
-                            mix_loc = F_local @ mix_loc
+                ref_pb.rotation_quaternion = mix_quat
 
-                        # Scale location for root motion
-                        mix_loc = mix_loc * scale_factor
-
-                        ref_pb.location = mix_loc
-                    else:
-                        # Child bone: location is always (0,0,0) because
-                        # position is determined by parent chain + rest offset.
-                        # BVH bone lengths differ from Mixamo, so we can't
-                        # transfer location offsets between skeletons.
-                        ref_pb.location = zero_vec.copy()
-
-                    ref_pb.rotation_quaternion = mix_quat
+                if ref_pb.parent is None:
+                    # Root bone: apply scale and forward correction later
+                    ref_pb.location = mix_loc * scale_factor
+                else:
+                    ref_pb.location = zero_vec.copy()
             else:
-                # Unmapped bone: keep rest pose
                 ref_pb.rotation_quaternion = identity_quat.copy()
                 ref_pb.location = zero_vec.copy()
 
@@ -733,10 +689,97 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                 data_path='location', frame=fi, group=ref_pb.name
             )
 
-    print(f"[BVH2FBX] Retargeted {num_frames} frames for {len(bone_map)} bone pairs")
+    print(f"[BVH2FBX] Baked {num_frames} frames for {len(bone_map)} bone pairs")
 
     # =========================================================================
-    # STEP 5: Normalize root bone location (start at origin)
+    # STEP 5: Remove constraints
+    # =========================================================================
+    for ref_pb, cr_name in constraints_added:
+        if cr_name in ref_pb.constraints:
+            ref_pb.constraints.remove(ref_pb.constraints[cr_name])
+
+    print(f"[BVH2FBX] Removed {len(constraints_added)} constraints")
+
+    # =========================================================================
+    # STEP 6: Apply forward rotation to root bone keyframes
+    # =========================================================================
+    if forward_quat and root_bone_name and root_bone_name in ref_armature.pose.bones:
+        root_rest_quat = ref_armature.pose.bones[root_bone_name].bone.matrix_local.to_quaternion()
+        # Convert forward_quat from armature space to root bone local space
+        F_local = root_rest_quat.inverted() @ forward_quat @ root_rest_quat
+        F_local.normalize()
+
+        # Apply F_local to root bone's rotation and location keyframes
+        rot_data_path = f'pose.bones["{root_bone_name}"].rotation_quaternion'
+        loc_data_path = f'pose.bones["{root_bone_name}"].location'
+
+        for fcurve in new_action.fcurves:
+            if fcurve.data_path == rot_data_path:
+                # Apply rotation to quaternion keyframes
+                for kp in fcurve.keyframe_points:
+                    # We need all 4 quaternion components to apply the rotation
+                    # This is done per-component below
+                    pass
+            elif fcurve.data_path == loc_data_path:
+                # Apply rotation to location keyframes
+                idx = fcurve.array_index
+                for kp in fcurve.keyframe_points:
+                    loc = mathutils.Vector((0, 0, 0))
+                    # Read all 3 location components at this frame
+                    for other_fcurve in new_action.fcurves:
+                        if other_fcurve.data_path == loc_data_path:
+                            for other_kp in other_fcurve.keyframe_points:
+                                if abs(other_kp.co[0] - kp.co[0]) < 0.5:
+                                    loc[other_fcurve.array_index] = other_kp.co[1]
+                                    break
+                    # Rotate the location vector
+                    rotated_loc = F_local @ loc
+                    kp.co[1] = rotated_loc[idx]
+                    if kp.handle_left:
+                        kp.handle_left[1] = rotated_loc[idx]
+                    if kp.handle_right:
+                        kp.handle_right[1] = rotated_loc[idx]
+
+        # Apply rotation to quaternion keyframes (need all 4 components)
+        rot_curves = {}
+        for fcurve in new_action.fcurves:
+            if fcurve.data_path == rot_data_path:
+                rot_curves[fcurve.array_index] = fcurve
+
+        if len(rot_curves) == 4:
+            # Get all frame numbers
+            frames = set()
+            for fcurve in rot_curves.values():
+                for kp in fcurve.keyframe_points:
+                    frames.add(int(round(kp.co[0])))
+
+            for frame in sorted(frames):
+                # Read current quaternion
+                q = mathutils.Quaternion((1, 0, 0, 0))
+                for idx, fcurve in rot_curves.items():
+                    for kp in fcurve.keyframe_points:
+                        if abs(kp.co[0] - frame) < 0.5:
+                            q[idx] = kp.co[1]
+                            break
+
+                # Apply forward rotation
+                q = F_local @ q
+                q.normalize()
+
+                # Write back
+                for idx, fcurve in rot_curves.items():
+                    for kp in fcurve.keyframe_points:
+                        if abs(kp.co[0] - frame) < 0.5:
+                            kp.co[1] = q[idx]
+                            break
+
+        for fcurve in new_action.fcurves:
+            fcurve.update()
+
+        print(f"[BVH2FBX] Forward rotation applied to root bone keyframes")
+
+    # =========================================================================
+    # STEP 7: Normalize root bone location (start at origin)
     # =========================================================================
     if root_bone_name in ref_armature.pose.bones:
         _normalize_root_location(ref_armature, root_bone_name, new_action)
@@ -765,7 +808,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         "root_is_mapped": root_is_mapped,
         "skeleton_type": ref_skeleton_type,
         "forward_correction": f"{forward_angle:.1f} deg" if forward_quat else "No",
-        "bake_method": "rest_pose_composition_v13",
+        "bake_method": "constraint_bake_v14",
     }
 
     return new_action, stats
