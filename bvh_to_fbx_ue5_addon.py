@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v15.0",
-    "version": (15, 0, 0),
+    "author": "BVH2FBX Converter v15.1",
+    "version": (15, 1, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -438,8 +438,12 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 #   bvh_local_pose = bvh_parent.matrix_inv @ bvh_bone.matrix
 #   mix_local_rest = mix_parent.bone.matrix_local_inv @ mix_bone.bone.matrix_local
 #
-# This formula is PROVEN correct by induction. No constraints needed.
-# No depsgraph evaluation tricks. Direct, clean, simple.
+# This formula is PROVEN correct by induction for CHILD bones.
+# For the ROOT bone, we need M_rel = M_mix_obj^-1 @ M_bvh_obj to
+# convert from BVH armature space to Mixamo armature space.
+# This is because bone.matrix is in armature-LOCAL space, and the two
+# armatures have different object transforms (BVH=identity, Mixamo=RotX(90)+Scale(0.01)).
+# For child bones, M_rel cancels when computing local poses (proven by induction).
 #
 
 
@@ -630,6 +634,30 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
               f"w={F_local.w:.4f}, x={F_local.x:.4f}, y={F_local.y:.4f}, z={F_local.z:.4f}")
 
     # =========================================================================
+    # STEP 5b: Compute M_rel (relative armature object transform)
+    # =========================================================================
+    # bone.matrix is in armature-LOCAL space. When the two armature objects
+    # have different transforms, the root bone's matrix needs to be converted
+    # from BVH armature space to Mixamo armature space.
+    # M_rel = M_mix_obj^-1 @ M_bvh_obj
+    # For child bones, M_rel cancels when computing local poses (proven).
+    M_bvh_obj = bvh_armature.matrix_world.copy()
+    M_mix_obj = ref_armature.matrix_world.copy()
+    try:
+        M_rel = M_mix_obj.inverted() @ M_bvh_obj
+    except ValueError:
+        M_rel = mathutils.Matrix.Identity(4)
+        print("[BVH2FBX] WARNING: Could not compute M_rel (singular Mixamo object matrix)")
+
+    # Log M_rel diagnostics
+    m_rel_loc, m_rel_rot, m_rel_scale = M_rel.decompose()
+    m_rel_euler = m_rel_rot.to_euler()
+    print(f"[BVH2FBX] M_rel (BVH space -> Mixamo space):")
+    print(f"  rotation: ({math.degrees(m_rel_euler.x):.1f}, {math.degrees(m_rel_euler.y):.1f}, {math.degrees(m_rel_euler.z):.1f}) deg")
+    print(f"  scale: ({m_rel_scale.x:.4f}, {m_rel_scale.y:.4f}, {m_rel_scale.z:.4f})")
+    print(f"  translation: ({m_rel_loc.x:.4f}, {m_rel_loc.y:.4f}, {m_rel_loc.z:.4f})")
+
+    # =========================================================================
     # STEP 6: Precompute mix_local_rest_inv for all bones
     # =========================================================================
     mix_local_rest_inv = {}
@@ -667,11 +695,15 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
 
             # --- Compute BVH bone's local pose (relative to BVH parent) ---
             if bvh_pb.parent:
+                # Child bone: local pose relative to parent
+                # M_rel cancels for child bones (proven by induction)
                 bvh_parent_mat = bvh_pb.parent.matrix.copy()
                 bvh_local_pose = bvh_parent_mat.inverted() @ bvh_mat
             else:
-                # Root bone — local pose = world matrix
-                bvh_local_pose = bvh_mat
+                # Root bone: convert from BVH armature space to Mixamo armature space
+                # using M_rel. This handles the 90° X rotation and 0.01x scale
+                # difference between the two armature objects.
+                bvh_local_pose = M_rel @ bvh_mat
 
             # --- Compute Mixamo channel: mix_channel = mix_rest_inv @ bvh_local_pose ---
             rest_inv = mix_local_rest_inv.get(ref_name)
