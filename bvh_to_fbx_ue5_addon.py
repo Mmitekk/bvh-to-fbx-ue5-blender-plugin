@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v13.0",
-    "version": (13, 0, 0),
+    "author": "BVH2FBX Converter v13.1",
+    "version": (13, 1, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -67,13 +67,18 @@ def fetch_github_releases():
 def find_asset_url(release, filename):
     for asset in release.get("assets", []):
         if asset.get("name") == filename:
-            return asset.get("browser_download_url") or asset.get("url")
+            # Prefer API URL which supports auth headers for private repos
+            return asset.get("url") or asset.get("browser_download_url")
     return None
 
 
 def download_file(url, dest_path):
     ctx = ssl.create_default_context()
-    req = urllib.request.Request(url, headers={"User-Agent": "BVH2FBX-Blender-Addon"})
+    headers = {"User-Agent": "BVH2FBX-Blender-Addon"}
+    # GitHub API asset URLs require Accept header for binary download
+    if "api.github.com" in url and "/assets/" in url:
+        headers["Accept"] = "application/octet-stream"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
         with open(dest_path, "wb") as f:
             shutil.copyfileobj(resp, f)
@@ -1193,8 +1198,18 @@ class BVH2FBX_OT_install_update(bpy.types.Operator):
             shutil.copy2(current_addon_path, backup_path)
             shutil.move(new_addon_path, current_addon_path)
 
-            self.report({'INFO'}, f"Обновлено до {target_tag}! Перезапустите Blender.")
-            props.update_status = f"Обновлено до {target_tag}! Перезапустите Blender."
+            # Reload the addon immediately without requiring Blender restart
+            try:
+                addon_module_name = __name__
+                # Disable then re-enable the addon to reload it
+                bpy.ops.preferences.addon_disable(module=addon_module_name)
+                bpy.ops.preferences.addon_enable(module=addon_module_name)
+                self.report({'INFO'}, f"Обновлено до {target_tag}! Плагин перезагружен.")
+                props.update_status = f"Обновлено до {target_tag}! Плагин перезагружен."
+            except Exception as reload_err:
+                self.report({'INFO'}, f"Обновлено до {target_tag}! Перезапустите Blender для применения.")
+                props.update_status = f"Обновлено до {target_tag}! Перезапустите Blender."
+                print(f"[BVH2FBX] Auto-reload failed: {reload_err}. Manual restart needed.")
 
         except Exception as e:
             if os.path.exists(backup_path):
