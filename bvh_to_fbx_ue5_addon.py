@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v8.2",
-    "version": (8, 2, 0),
+    "author": "BVH2FBX Converter v8.3",
+    "version": (8, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -1358,6 +1358,17 @@ class BVH2FBX_VersionItem(bpy.types.PropertyGroup):
     description: bpy.props.StringProperty(name="Description", default="")
 
 
+class BVH2FBX_UL_versions(bpy.types.UIList):
+    """UI List for displaying available plugin versions."""
+    bl_idname = "BVH2FBX_UL_versions"
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if item.label:
+            layout.label(text=item.label)
+        else:
+            layout.label(text=item.tag)
+
+
 class BVH2FBX_Properties(bpy.types.PropertyGroup):
     bvh_filepath: bpy.props.StringProperty(
         name="BVH файл",
@@ -1483,13 +1494,26 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
 
         layout.label(text=f"Версия: {version_to_string(CURRENT_VERSION)}")
 
+        # Always show check updates button
         layout.operator("bvh2fbx.check_updates", icon='URL')
 
         if props.update_status:
             layout.label(text=props.update_status)
 
+        # Always show version list and install button
+        # (install button will be grayed out by poll if no versions available)
         if len(props.available_versions) > 0:
-            layout.prop(props, "selected_version_index", text="Версия")
+            layout.template_list(
+                "BVH2FBX_UL_versions", "",
+                props, "available_versions",
+                props, "selected_version_index",
+                rows=5,
+            )
+            layout.operator("bvh2fbx.install_update", icon='DOWN')
+        else:
+            # Show a hint when no versions are loaded yet
+            layout.label(text="Нажмите 'Проверить обновления'", icon='INFO')
+            # Still show install button (will be grayed out by poll)
             layout.operator("bvh2fbx.install_update", icon='DOWN')
 
 
@@ -1499,6 +1523,7 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
 
 classes = (
     BVH2FBX_VersionItem,
+    BVH2FBX_UL_versions,
     BVH2FBX_Properties,
     BVH2FBX_OT_convert,
     BVH2FBX_OT_import_skeleton,
