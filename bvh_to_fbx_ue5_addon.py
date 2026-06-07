@@ -2,7 +2,7 @@ bl_info = {
     "name": "BVH to FBX for UE5",
     "author": "BVH2FBX Converter v9.0",
     "version": (9, 0, 0),
-    "blender": (3, 0, 0),
+    "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
     "category": "Animation",
@@ -190,143 +190,6 @@ ALL_BVH_MAPS_UE5 = OrderedDict()
 ALL_BVH_MAPS_UE5.update(BVH_TO_UE5)
 ALL_BVH_MAPS_UE5.update(MIXAMO_TO_UE5)
 
-# ---------------------------------------------------------------------------
-# SOMA BVH → Mixamo mapping
-# ---------------------------------------------------------------------------
-# For Kimodo/SOMA mocap BVH files which use a DIFFERENT bone naming scheme
-# than standard BVH. Key differences:
-#   - SOMA "LeftLeg" = THIGH (mixamorig:LeftUpLeg), NOT calf
-#   - SOMA "LeftShin" = CALF  (mixamorig:LeftLeg)
-#   - SOMA "Spine1" = mixamorig:Spine (NOT Spine1)
-#   - SOMA "Spine2" = mixamorig:Spine1
-#   - SOMA "Chest"  = mixamorig:Spine2
-#   - SOMA "Neck1"  = mixamorig:Neck (Mixamo has no Neck1)
-#   - SOMA "Neck2"  = (no Mixamo equivalent, skip)
-#   - SOMA has 2-level root: Root → Hips. Root holds root motion translation.
-SOMA_TO_MIXAMO = {
-    'Hips': 'mixamorig:Hips',
-    'Spine1': 'mixamorig:Spine',
-    'Spine2': 'mixamorig:Spine1',
-    'Chest': 'mixamorig:Spine2',
-    'Neck1': 'mixamorig:Neck',
-    # Neck2: skipped (no Mixamo equivalent)
-    'Head': 'mixamorig:Head',
-    'LeftShoulder': 'mixamorig:LeftShoulder',
-    'LeftArm': 'mixamorig:LeftArm',
-    'LeftForeArm': 'mixamorig:LeftForeArm',
-    'LeftHand': 'mixamorig:LeftHand',
-    'LeftLeg': 'mixamorig:LeftUpLeg',       # KEY: SOMA LeftLeg = THIGH
-    'LeftShin': 'mixamorig:LeftLeg',         # KEY: SOMA LeftShin = CALF
-    'LeftFoot': 'mixamorig:LeftFoot',
-    'LeftToeBase': 'mixamorig:LeftToeBase',
-    'RightShoulder': 'mixamorig:RightShoulder',
-    'RightArm': 'mixamorig:RightArm',
-    'RightForeArm': 'mixamorig:RightForeArm',
-    'RightHand': 'mixamorig:RightHand',
-    'RightLeg': 'mixamorig:RightUpLeg',      # KEY: SOMA RightLeg = THIGH
-    'RightShin': 'mixamorig:RightLeg',        # KEY: SOMA RightShin = CALF
-    'RightFoot': 'mixamorig:RightFoot',
-    'RightToeBase': 'mixamorig:RightToeBase',
-    # Finger mappings (SOMA has same finger naming as standard BVH)
-    'LeftHandThumb1': 'mixamorig:LeftHandThumb1',
-    'LeftHandThumb2': 'mixamorig:LeftHandThumb2',
-    'LeftHandThumb3': 'mixamorig:LeftHandThumb3',
-    'LeftHandIndex1': 'mixamorig:LeftHandIndex1',
-    'LeftHandIndex2': 'mixamorig:LeftHandIndex2',
-    'LeftHandIndex3': 'mixamorig:LeftHandIndex3',
-    'LeftHandIndex4': 'mixamorig:LeftHandIndex4',
-    'LeftHandMiddle1': 'mixamorig:LeftHandMiddle1',
-    'LeftHandMiddle2': 'mixamorig:LeftHandMiddle2',
-    'LeftHandMiddle3': 'mixamorig:LeftHandMiddle3',
-    'LeftHandMiddle4': 'mixamorig:LeftHandMiddle4',
-    'LeftHandRing1': 'mixamorig:LeftHandRing1',
-    'LeftHandRing2': 'mixamorig:LeftHandRing2',
-    'LeftHandRing3': 'mixamorig:LeftHandRing3',
-    'LeftHandRing4': 'mixamorig:LeftHandRing4',
-    'LeftHandPinky1': 'mixamorig:LeftHandPinky1',
-    'LeftHandPinky2': 'mixamorig:LeftHandPinky2',
-    'LeftHandPinky3': 'mixamorig:LeftHandPinky3',
-    'LeftHandPinky4': 'mixamorig:LeftHandPinky4',
-    'RightHandThumb1': 'mixamorig:RightHandThumb1',
-    'RightHandThumb2': 'mixamorig:RightHandThumb2',
-    'RightHandThumb3': 'mixamorig:RightHandThumb3',
-    'RightHandIndex1': 'mixamorig:RightHandIndex1',
-    'RightHandIndex2': 'mixamorig:RightHandIndex2',
-    'RightHandIndex3': 'mixamorig:RightHandIndex3',
-    'RightHandIndex4': 'mixamorig:RightHandIndex4',
-    'RightHandMiddle1': 'mixamorig:RightHandMiddle1',
-    'RightHandMiddle2': 'mixamorig:RightHandMiddle2',
-    'RightHandMiddle3': 'mixamorig:RightHandMiddle3',
-    'RightHandMiddle4': 'mixamorig:RightHandMiddle4',
-    'RightHandRing1': 'mixamorig:RightHandRing1',
-    'RightHandRing2': 'mixamorig:RightHandRing2',
-    'RightHandRing3': 'mixamorig:RightHandRing3',
-    'RightHandRing4': 'mixamorig:RightHandRing4',
-    'RightHandPinky1': 'mixamorig:RightHandPinky1',
-    'RightHandPinky2': 'mixamorig:RightHandPinky2',
-    'RightHandPinky3': 'mixamorig:RightHandPinky3',
-    'RightHandPinky4': 'mixamorig:RightHandPinky4',
-}
-
-# Standard BVH → Mixamo (for non-SOMA BVH files with standard naming)
-STANDARD_TO_MIXAMO = {
-    'Hips': 'mixamorig:Hips',
-    'Spine': 'mixamorig:Spine',
-    'Spine1': 'mixamorig:Spine1',
-    'Spine2': 'mixamorig:Spine2',
-    'Neck': 'mixamorig:Neck',
-    'Head': 'mixamorig:Head',
-    'LeftShoulder': 'mixamorig:LeftShoulder',
-    'LeftArm': 'mixamorig:LeftArm',
-    'LeftForeArm': 'mixamorig:LeftForeArm',
-    'LeftHand': 'mixamorig:LeftHand',
-    'RightShoulder': 'mixamorig:RightShoulder',
-    'RightArm': 'mixamorig:RightArm',
-    'RightForeArm': 'mixamorig:RightForeArm',
-    'RightHand': 'mixamorig:RightHand',
-    'LeftUpLeg': 'mixamorig:LeftUpLeg',
-    'LeftLeg': 'mixamorig:LeftLeg',
-    'LeftFoot': 'mixamorig:LeftFoot',
-    'LeftToeBase': 'mixamorig:LeftToeBase',
-    'LeftToe': 'mixamorig:LeftToeBase',
-    'RightUpLeg': 'mixamorig:RightUpLeg',
-    'RightLeg': 'mixamorig:RightLeg',
-    'RightFoot': 'mixamorig:RightFoot',
-    'RightToeBase': 'mixamorig:RightToeBase',
-    'RightToe': 'mixamorig:RightToeBase',
-    # Finger mappings
-    'LeftHandThumb1': 'mixamorig:LeftHandThumb1',
-    'LeftHandThumb2': 'mixamorig:LeftHandThumb2',
-    'LeftHandThumb3': 'mixamorig:LeftHandThumb3',
-    'LeftHandIndex1': 'mixamorig:LeftHandIndex1',
-    'LeftHandIndex2': 'mixamorig:LeftHandIndex2',
-    'LeftHandIndex3': 'mixamorig:LeftHandIndex3',
-    'LeftHandMiddle1': 'mixamorig:LeftHandMiddle1',
-    'LeftHandMiddle2': 'mixamorig:LeftHandMiddle2',
-    'LeftHandMiddle3': 'mixamorig:LeftHandMiddle3',
-    'LeftHandRing1': 'mixamorig:LeftHandRing1',
-    'LeftHandRing2': 'mixamorig:LeftHandRing2',
-    'LeftHandRing3': 'mixamorig:LeftHandRing3',
-    'LeftHandPinky1': 'mixamorig:LeftHandPinky1',
-    'LeftHandPinky2': 'mixamorig:LeftHandPinky2',
-    'LeftHandPinky3': 'mixamorig:LeftHandPinky3',
-    'RightHandThumb1': 'mixamorig:RightHandThumb1',
-    'RightHandThumb2': 'mixamorig:RightHandThumb2',
-    'RightHandThumb3': 'mixamorig:RightHandThumb3',
-    'RightHandIndex1': 'mixamorig:RightHandIndex1',
-    'RightHandIndex2': 'mixamorig:RightHandIndex2',
-    'RightHandIndex3': 'mixamorig:RightHandIndex3',
-    'RightHandMiddle1': 'mixamorig:RightHandMiddle1',
-    'RightHandMiddle2': 'mixamorig:RightHandMiddle2',
-    'RightHandMiddle3': 'mixamorig:RightHandMiddle3',
-    'RightHandRing1': 'mixamorig:RightHandRing1',
-    'RightHandRing2': 'mixamorig:RightHandRing2',
-    'RightHandRing3': 'mixamorig:RightHandRing3',
-    'RightHandPinky1': 'mixamorig:RightHandPinky1',
-    'RightHandPinky2': 'mixamorig:RightHandPinky2',
-    'RightHandPinky3': 'mixamorig:RightHandPinky3',
-}
-
 
 # ============================================================================
 # BVH AXIS AUTO-DETECTION
@@ -340,9 +203,6 @@ def detect_bvh_axis_convention(filepath):
     - Y-up, -Z-forward (standard mocap): Hips offset ≈ (0, H, 0), LeftUpLeg ≈ (L, H, 0)
     - Z-up, Y-forward (Mixamo/game): Hips offset ≈ (0, 0, H), LeftUpLeg ≈ (L, 0, 0)
 
-    Also handles SOMA BVH which uses "LeftLeg" instead of "LeftUpLeg" for the
-    thigh bone.
-
     Returns: (axis_forward, axis_up) strings for Blender's BVH importer
     """
     try:
@@ -351,7 +211,7 @@ def detect_bvh_axis_convention(filepath):
     except Exception:
         return '-Z', 'Y'  # Default to standard
 
-    # Find Hips OFFSET and LeftUpLeg/LeftLeg OFFSET
+    # Find Hips OFFSET and LeftUpLeg OFFSET
     hips_offset = None
     left_upleg_offset = None
 
@@ -373,21 +233,8 @@ def detect_bvh_axis_convention(filepath):
                         pass
                     break
 
-        # Find LeftUpLeg joint (standard BVH naming)
+        # Find LeftUpLeg joint
         if line.upper().startswith('JOINT') and 'LEFTUPLEG' in line.upper().replace(' ', ''):
-            for j in range(i + 1, min(i + 5, len(lines))):
-                offset_line = lines[j].strip()
-                if offset_line.upper().startswith('OFFSET'):
-                    parts = offset_line.split()
-                    try:
-                        left_upleg_offset = (float(parts[1]), float(parts[2]), float(parts[3]))
-                    except (ValueError, IndexError):
-                        pass
-                    break
-
-        # Find LeftLeg joint (SOMA BVH naming - used for thigh)
-        # Only use this if LeftUpLeg was not found
-        if left_upleg_offset is None and line.upper().startswith('JOINT') and 'LEFTLEG' in line.upper().replace(' ', ''):
             for j in range(i + 1, min(i + 5, len(lines))):
                 offset_line = lines[j].strip()
                 if offset_line.upper().startswith('OFFSET'):
@@ -507,96 +354,87 @@ def detect_skeleton_type(armature):
     return 'unknown'
 
 
-def _detect_bvh_source_type(bvh_armature):
-    """Detect whether a BVH armature uses SOMA naming or standard naming.
-
-    SOMA BVH has "LeftLeg" as a child of Hips (representing the thigh),
-    whereas standard BVH has "LeftUpLeg" as a child of Hips.
-
-    Returns: 'soma', 'standard', or 'mixamo'
-    """
-    bvh_bone_names = set(bvh_armature.pose.bones.keys())
-
-    # If BVH already has mixamorig: prefix, it's a Mixamo BVH
-    mixamorig_count = sum(1 for n in bvh_bone_names if n.startswith('mixamorig:'))
-    if mixamorig_count > 5:
-        return 'mixamo'
-
-    # Check for SOMA indicators:
-    # - Has "LeftLeg" as direct child of Hips (thigh)
-    # - Has "LeftShin" (calf)
-    # - Does NOT have "LeftUpLeg"
-    has_left_shin = 'LeftShin' in bvh_bone_names
-    has_left_upleg = 'LeftUpLeg' in bvh_bone_names
-    has_left_leg = 'LeftLeg' in bvh_bone_names
-    has_right_shin = 'RightShin' in bvh_bone_names
-
-    if has_left_shin and has_left_leg and not has_left_upleg:
-        # SOMA: has LeftLeg (thigh) + LeftShin (calf), no LeftUpLeg
-        print("[BVH2FBX] Detected SOMA BVH naming convention")
-        return 'soma'
-
-    if has_right_shin and has_left_leg and not has_left_upleg:
-        # Also SOMA (checking right side)
-        print("[BVH2FBX] Detected SOMA BVH naming convention (right side)")
-        return 'soma'
-
-    # Check for Chest bone (SOMA has Chest between Spine2 and Neck)
-    has_chest = 'Chest' in bvh_bone_names
-    has_neck1 = 'Neck1' in bvh_bone_names
-    has_neck2 = 'Neck2' in bvh_bone_names
-
-    if has_chest and has_neck1 and has_neck2 and not has_left_upleg:
-        print("[BVH2FBX] Detected SOMA BVH naming convention (Chest+Neck1+Neck2)")
-        return 'soma'
-
-    print("[BVH2FBX] Detected standard BVH naming convention")
-    return 'standard'
-
-
 def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
     """Build bone mapping: ref_bone_name -> bvh_bone_name.
 
-    For Mixamo target:
-      1. Try direct name match (BVH has mixamorig: prefix)
-      2. Try SOMA_TO_MIXAMO mapping (if BVH uses SOMA naming)
-      3. Try STANDARD_TO_MIXAMO mapping (for standard BVH files)
+    For Mixamo target: direct name matching (1:1)
     For UE5 target: use BVH_TO_UE5 / MIXAMO_TO_UE5 lookup tables
     """
     bvh_bone_names = set(bvh_armature.pose.bones.keys())
     bone_map = {}
 
     if ref_skeleton_type == 'mixamo':
-        # Phase 1: Direct name matching (BVH already has mixamorig: prefix)
+        # Direct name matching: BVH mixamorig:Name → ref mixamorig:Name
+        # Also handle standard BVH names → mixamorig:Name
+        STANDARD_TO_MIXAMO = {
+            'Hips': 'mixamorig:Hips',
+            'Spine': 'mixamorig:Spine',
+            'Spine1': 'mixamorig:Spine1',
+            'Spine2': 'mixamorig:Spine2',
+            'Neck': 'mixamorig:Neck',
+            'Neck1': 'mixamorig:Neck1',
+            'Head': 'mixamorig:Head',
+            'LeftShoulder': 'mixamorig:LeftShoulder',
+            'LeftArm': 'mixamorig:LeftArm',
+            'LeftForeArm': 'mixamorig:LeftForeArm',
+            'LeftHand': 'mixamorig:LeftHand',
+            'RightShoulder': 'mixamorig:RightShoulder',
+            'RightArm': 'mixamorig:RightArm',
+            'RightForeArm': 'mixamorig:RightForeArm',
+            'RightHand': 'mixamorig:RightHand',
+            'LeftUpLeg': 'mixamorig:LeftUpLeg',
+            'LeftLeg': 'mixamorig:LeftLeg',
+            'LeftFoot': 'mixamorig:LeftFoot',
+            'LeftToeBase': 'mixamorig:LeftToeBase',
+            'LeftToe': 'mixamorig:LeftToeBase',
+            'RightUpLeg': 'mixamorig:RightUpLeg',
+            'RightLeg': 'mixamorig:RightLeg',
+            'RightFoot': 'mixamorig:RightFoot',
+            'RightToeBase': 'mixamorig:RightToeBase',
+            'RightToe': 'mixamorig:RightToeBase',
+            # Finger mappings
+            'LeftHandThumb1': 'mixamorig:LeftHandThumb1',
+            'LeftHandThumb2': 'mixamorig:LeftHandThumb2',
+            'LeftHandThumb3': 'mixamorig:LeftHandThumb3',
+            'LeftHandIndex1': 'mixamorig:LeftHandIndex1',
+            'LeftHandIndex2': 'mixamorig:LeftHandIndex2',
+            'LeftHandIndex3': 'mixamorig:LeftHandIndex3',
+            'LeftHandMiddle1': 'mixamorig:LeftHandMiddle1',
+            'LeftHandMiddle2': 'mixamorig:LeftHandMiddle2',
+            'LeftHandMiddle3': 'mixamorig:LeftHandMiddle3',
+            'LeftHandRing1': 'mixamorig:LeftHandRing1',
+            'LeftHandRing2': 'mixamorig:LeftHandRing2',
+            'LeftHandRing3': 'mixamorig:LeftHandRing3',
+            'LeftHandPinky1': 'mixamorig:LeftHandPinky1',
+            'LeftHandPinky2': 'mixamorig:LeftHandPinky2',
+            'LeftHandPinky3': 'mixamorig:LeftHandPinky3',
+            'RightHandThumb1': 'mixamorig:RightHandThumb1',
+            'RightHandThumb2': 'mixamorig:RightHandThumb2',
+            'RightHandThumb3': 'mixamorig:RightHandThumb3',
+            'RightHandIndex1': 'mixamorig:RightHandIndex1',
+            'RightHandIndex2': 'mixamorig:RightHandIndex2',
+            'RightHandIndex3': 'mixamorig:RightHandIndex3',
+            'RightHandMiddle1': 'mixamorig:RightHandMiddle1',
+            'RightHandMiddle2': 'mixamorig:RightHandMiddle2',
+            'RightHandMiddle3': 'mixamorig:RightHandMiddle3',
+            'RightHandRing1': 'mixamorig:RightHandRing1',
+            'RightHandRing2': 'mixamorig:RightHandRing2',
+            'RightHandRing3': 'mixamorig:RightHandRing3',
+            'RightHandPinky1': 'mixamorig:RightHandPinky1',
+            'RightHandPinky2': 'mixamorig:RightHandPinky2',
+            'RightHandPinky3': 'mixamorig:RightHandPinky3',
+        }
+
         for pb in ref_armature.pose.bones:
+            # Direct match: same name in BVH
             if pb.name in bvh_bone_names:
                 bone_map[pb.name] = pb.name
-
-        # Phase 2: Detect BVH source type and apply appropriate mapping
-        bvh_source = _detect_bvh_source_type(bvh_armature)
-
-        if bvh_source == 'soma':
-            # Try SOMA_TO_MIXAMO mapping for unmapped bones
-            for pb in ref_armature.pose.bones:
-                if pb.name not in bone_map:
-                    for soma_name, mix_name in SOMA_TO_MIXAMO.items():
-                        if mix_name == pb.name and soma_name in bvh_bone_names:
-                            bone_map[pb.name] = soma_name
-                            break
-        elif bvh_source == 'standard':
-            # Try STANDARD_TO_MIXAMO mapping for unmapped bones
-            for pb in ref_armature.pose.bones:
-                if pb.name not in bone_map:
-                    for std_name, mix_name in STANDARD_TO_MIXAMO.items():
-                        if mix_name == pb.name and std_name in bvh_bone_names:
-                            bone_map[pb.name] = std_name
-                            break
-
-        # Phase 3: Log mapping results
-        mapped_count = len(bone_map)
-        total = len(ref_armature.pose.bones)
-        print(f"[BVH2FBX] Mixamo mapping: {mapped_count}/{total} bones (BVH source: {bvh_source})")
-
+            else:
+                # Try standard → mixamorig mapping
+                for std_name, mix_name in STANDARD_TO_MIXAMO.items():
+                    if mix_name == pb.name and std_name in bvh_bone_names:
+                        bone_map[pb.name] = std_name
+                        break
     else:
         # UE5 or unknown: use lookup tables
         for pb in ref_armature.pose.bones:
@@ -608,352 +446,349 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 
 
 # ============================================================================
-# RETARGETING ENGINE v9.0 — CONJUGATION-BASED ROTATION TRANSFER
+# RETARGETING ENGINE v9.0 — DELTA TRANSFER WITH BASIS CHANGE CONJUGATION
 # ============================================================================
-# v9.0 APPROACH: Conjugate BVH world rotation through TARGET rest local matrix.
 #
-# MATHEMATICAL DERIVATION:
+# WHY v8.0 (World-Space Matching) FAILED:
 #
-# In Blender, pose evaluation for bone B with parent P:
-#   B.matrix = P.matrix @ B.bone.matrix_local @ Rot(q)
+# v8.0 tried to match each Mixamo bone's WORLD orientation to the BVH bone's
+# world orientation. While mathematically sound, this approach fails in practice
+# because:
+#   1. When BVH and Mixamo bones have different rest poses, matching world
+#      orientations produces incorrect LOCAL deltas for child bones
+#   2. The hierarchical delta computation (parent_posed tracking) accumulates
+#      errors through the bone chain
+#   3. Applying forward rotation to ALL bones' world rotations is redundant
+#      and introduces numerical errors — it should only affect the root
 #
-# We want the target bone to have the same WORLD orientation as the BVH bone
-# (with forward correction for root). This means:
+# THE v9.0 APPROACH — DELTA TRANSFER WITH BASIS CHANGE:
 #
-#   target_B.matrix = fwd_rot @ bvh_B.matrix    (for ALL bones)
+# Core idea: transfer the ANIMATION DELTA (pose change from rest) from the BVH
+# bone to the Mixamo bone, correcting for the difference in rest orientations.
 #
-# For root bone (no parent):
-#   target_bone.matrix_local @ Rot(q) = fwd_rot @ bvh_curr
-#   Rot(q) = target_rest_local^(-1) @ fwd_rot @ bvh_curr
+# In Blender, pb.matrix_basis contains the animation delta (rotation from rest).
+# This delta is defined in the bone's LOCAL coordinate frame, which depends on
+# the bone's rest orientation. If two bones have different rest orientations,
+# the same delta means different visual rotations.
 #
-# For child bone with parent P:
-#   target_B.matrix = target_P.matrix @ target_B.bone.matrix_local @ Rot(q)
+# To correctly transfer the delta, we use a change-of-basis (conjugation):
+#   D_target = B @ D_bvh @ B^-1
+# where B = R_target_local^-1 @ R_bvh_local
 #
-# Since target_P.matrix = fwd_rot @ bvh_P_curr (by induction):
-#   fwd_rot @ bvh_P_curr @ target_rest_local @ Rot(q) = fwd_rot @ bvh_B_curr
-#   target_rest_local @ Rot(q) = bvh_P_curr^(-1) @ bvh_B_curr
-#   Rot(q) = target_rest_local^(-1) @ bvh_P_curr^(-1) @ bvh_B_curr
+# This transforms the rotation delta from the BVH bone's local frame to the
+# Mixamo bone's local frame, preserving the visual effect of the rotation.
 #
-# The fwd_rot cancels out for child bones — only the root needs it.
+# Forward rotation is applied ONLY to the root bone's delta, not to all bones.
+# This is correct because rotating the root bone automatically rotates all
+# children through the parent-child hierarchy.
 #
-# KEY CORRECTION vs v8.2:
-#   v8.2 used bvh_rest^(-1) (BVH rest local) instead of target_rest_local^(-1).
-#   This is WRONG when BVH and target have different rest poses (different bone
-#   axis orientations). The result was "character lying horizontally with
-#   deformed bones" because the BVH rest orientation was used to decode the
-#   rotation into the target bone's local frame.
+# Algorithm:
+#   Pre-computation:
+#     1. For each mapped bone pair, compute B (basis change quaternion)
+#     2. Compute forward rotation in root bone's local space
 #
-#   v9.0 uses target_rest_local^(-1) which correctly converts the BVH world
-#   rotation into the TARGET bone's local rotation space, accounting for the
-#   different bone axis orientations in the two skeletons.
+#   Per-frame:
+#     1. Read BVH bone's matrix_basis (animation delta)
+#     2. Extract rotation quaternion from matrix_basis
+#     3. Apply basis change conjugation: delta_target = B @ delta_bvh @ B^-1
+#     4. For root bone: apply forward rotation
+#     5. Set Mixamo bone's rotation_quaternion
+#     6. Handle root motion translation
+
+def _get_local_rest_rot_3x3(pb):
+    """Get a bone's LOCAL rest rotation (3x3), relative to its parent.
+    
+    bone.matrix_local is cumulative (includes parent chain).
+    To get just the local part: parent.matrix_local^-1 @ bone.matrix_local
+    """
+    if pb.parent:
+        return pb.parent.bone.matrix_local.to_3x3().inverted() @ pb.bone.matrix_local.to_3x3()
+    else:
+        return pb.bone.matrix_local.to_3x3().copy()
+
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     """Retarget animation from BVH armature to reference armature.
-
-    Strategy: CONJUGATION-BASED ROTATION TRANSFER (v9.0)
-    For each frame:
-      1. Capture BVH bones' current world rotations
-      2. For each target bone in hierarchy order:
-         ROOT:  Rot(q) = target_rest_local^(-1) @ fwd_rot @ bvh_curr
-         CHILD: Rot(q) = target_rest_local^(-1) @ bvh_parent_curr^(-1) @ bvh_curr
-      3. Root motion displacement from BVH root motion bone
-
+    
+    Strategy: DELTA TRANSFER WITH BASIS CHANGE CONJUGATION (v9.0).
+    
+    For each frame and each mapped bone:
+      1. Read BVH bone's animation delta (matrix_basis rotation)
+      2. Apply basis change conjugation to transform delta to target's local frame
+      3. For root bone, apply forward rotation correction
+      4. Set Mixamo bone's rotation_quaternion
+      5. Handle root motion translation
+    
     Args:
         bvh_armature: Blender armature with BVH animation
         ref_armature: Blender armature (target skeleton) to animate
         scale_factor: Scale for root motion translation
-
+    
     Returns:
         (action, stats_dict)
     """
     scene = bpy.context.scene
     I3 = mathutils.Matrix.Identity(3)
     I4 = mathutils.Matrix.Identity(4)
-
+    
     # Detect target skeleton type
     ref_skeleton_type = detect_skeleton_type(ref_armature)
     print(f"[BVH2FBX] Target skeleton type: {ref_skeleton_type}")
-
-    # Build bone mapping
+    
+    # Build bone mapping: ref_bone_name -> bvh_bone_name
     bone_map = build_bone_map(bvh_armature, ref_armature, ref_skeleton_type)
-
+    
     # Get BVH animation info
     bvh_action = None
     if bvh_armature.animation_data and bvh_armature.animation_data.action:
         bvh_action = bvh_armature.animation_data.action
-
+    
     if not bvh_action:
         return None, {"error": "BVH armature has no animation"}
-
+    
     frame_start = int(bvh_action.frame_range[0])
     frame_end = int(bvh_action.frame_range[1])
     num_frames = frame_end - frame_start + 1
-
-    # Find BVH Hips bone
+    
+    # Find BVH Hips bone for root motion
     bvh_hips = find_hips_bone(bvh_armature)
-
-    # Find BVH root bone (bone with no parent - holds root motion translation)
-    bvh_root = None
-    for pb in bvh_armature.pose.bones:
-        if pb.parent is None:
-            bvh_root = pb
-            break
-
-    # For root motion, prefer the BVH root bone's position if it's different
-    # from Hips. This avoids hip sway being included in root motion displacement.
-    bvh_root_motion_bone = bvh_root if (bvh_root and bvh_root.name != (bvh_hips.name if bvh_hips else '')) else bvh_hips
-
-    print(f"[BVH2FBX] BVH root bone: {bvh_root.name if bvh_root else 'None'}")
-    print(f"[BVH2FBX] BVH hips bone: {bvh_hips.name if bvh_hips else 'None'}")
-    print(f"[BVH2FBX] Root motion bone: {bvh_root_motion_bone.name if bvh_root_motion_bone else 'None'}")
-
+    
     # Find root bone in target armature
     root_bone_name = find_root_bone(ref_armature)
     if not root_bone_name:
         return None, {"error": "No root bone found in reference armature"}
-
+    
     # Check if root bone is mapped (e.g., Mixamo: Hips IS the root)
     root_is_mapped = root_bone_name in bone_map
     root_bvh_name = bone_map.get(root_bone_name)
-
+    
     print(f"[BVH2FBX] Root bone: {root_bone_name} (mapped={root_is_mapped}, bvh={root_bvh_name})")
-
+    
     # =========================================================================
-    # STEP 1: Capture TARGET rest local rotations (bone.matrix_local)
+    # STEP 1: Pre-compute basis change quaternions for each bone pair
     # =========================================================================
-    # This is the key difference from v8.2: we use the TARGET skeleton's
-    # rest pose, not the BVH skeleton's rest pose, for the conjugation.
-    target_rest_local = {}
-    for pb in ref_armature.pose.bones:
-        target_rest_local[pb.name] = pb.bone.matrix_local.to_3x3().copy()
-
-    # Capture BVH first-frame positions for root motion reference
+    # The basis change B transforms a rotation delta from the BVH bone's local
+    # frame to the Mixamo bone's local frame:
+    #   B = R_target_local^-1 @ R_bvh_local
+    # Then: delta_target = B @ delta_bvh @ B^-1  (conjugation)
+    basis_quats = {}
+    basis_mats = {}
+    
+    for ref_name, bvh_name in bone_map.items():
+        if bvh_name not in bvh_armature.pose.bones:
+            continue
+        bvh_pb = bvh_armature.pose.bones[bvh_name]
+        ref_pb = ref_armature.pose.bones[ref_name]
+        
+        bvh_local_rest = _get_local_rest_rot_3x3(bvh_pb)
+        ref_local_rest = _get_local_rest_rot_3x3(ref_pb)
+        
+        # Basis change: B = ref^-1 @ bvh
+        B = ref_local_rest.inverted() @ bvh_local_rest
+        basis_mats[ref_name] = B.copy()
+        basis_quats[ref_name] = B.to_quaternion()
+    
+    # =========================================================================
+    # STEP 2: Capture BVH first-frame Hips position for root motion
+    # =========================================================================
     scene.frame_set(frame_start)
     bpy.context.view_layer.update()
-
-    bvh_ref_pos = {}
-    for pb in bvh_armature.pose.bones:
-        bvh_ref_pos[pb.name] = pb.matrix.translation.copy()
-
-    # BVH root motion reference position
-    root_motion_ref_pos = None
-    if bvh_root_motion_bone:
-        root_motion_ref_pos = bvh_ref_pos.get(bvh_root_motion_bone.name)
-        if root_motion_ref_pos is None:
-            root_motion_ref_pos = bvh_root_motion_bone.matrix.translation.copy()
-
+    
+    bvh_hips_ref_pos = None
+    if bvh_hips:
+        bvh_hips_ref_pos = bvh_hips.matrix.translation.copy()
+        print(f"[BVH2FBX] BVH Hips ref pos: {bvh_hips_ref_pos}")
+    
     # =========================================================================
-    # STEP 2: Detect forward direction from BVH root motion bone displacement
+    # STEP 3: Detect forward direction from BVH Hips displacement
     # =========================================================================
     forward_rotation = I4.copy()
     fwd_rot_3x3 = I3.copy()
-
-    walk_detect_bone = bvh_root_motion_bone if bvh_root_motion_bone else bvh_hips
-
-    if walk_detect_bone and num_frames > 1:
-        start_pos = bvh_ref_pos.get(walk_detect_bone.name, mathutils.Vector((0, 0, 0)))
-
+    
+    if bvh_hips and num_frames > 1:
+        start_pos = bvh_hips_ref_pos if bvh_hips_ref_pos else mathutils.Vector((0, 0, 0))
+        
         scene.frame_set(frame_end)
         bpy.context.view_layer.update()
-        end_pos = walk_detect_bone.matrix.translation.copy()
-
+        end_pos = bvh_hips.matrix.translation.copy()
+        
         walk_dir = end_pos - start_pos
-        walk_dir[1] = 0.0  # Project onto horizontal XZ plane
-
+        walk_dir.z = 0  # Zero out vertical component
+        
         if walk_dir.length > 0.001:
             walk_dir.normalize()
-            target_dir = mathutils.Vector((0, 0, -1))  # Blender/UE5 forward
-
+            target_dir = mathutils.Vector((0, -1, 0))  # UE5 forward = -Y
+            
             dot = walk_dir.dot(target_dir)
             if dot < -0.9999:
-                forward_rotation = mathutils.Matrix.Rotation(math.pi, 4, 'Y')
+                forward_rotation = mathutils.Matrix.Rotation(math.pi, 4, 'Z')
             elif dot < 0.9999:
                 axis = walk_dir.cross(target_dir)
                 if axis.length > 0.0001:
                     axis.normalize()
                     angle = math.acos(max(-1.0, min(1.0, dot)))
                     forward_rotation = mathutils.Matrix.Rotation(angle, 4, axis)
-
-            fwd_rot_3x3 = forward_rotation.to_3x3().copy()
-
-            print(f"[BVH2FBX] Walk detect bone: {walk_detect_bone.name}")
+            
+            fwd_rot_3x3 = forward_rotation.to_3x3()
+            
             print(f"[BVH2FBX] Walk direction: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f})")
             dot_clamped = max(-1.0, min(1.0, dot))
             print(f"[BVH2FBX] Forward correction: {math.degrees(math.acos(dot_clamped)):.1f} degrees")
-        else:
-            print("[BVH2FBX] No significant walk direction detected (stationary or in-place animation)")
-
-    # Reset to frame_start for main loop
-    scene.frame_set(frame_start)
-    bpy.context.view_layer.update()
-
-    # =========================================================================
-    # STEP 3: Create new animation action on reference armature
-    # =========================================================================
-    if ref_armature.animation_data is None:
-        ref_armature.animation_data_create()
-
-    action_name = ref_armature.name + "_BVHAction"
-    new_action = bpy.data.actions.new(action_name)
-    ref_armature.animation_data.action = new_action
-
-    scene.frame_start = 0
-    scene.frame_end = num_frames - 1
-
+    
+    has_forward = (fwd_rot_3x3 != I3)
+    
+    # Pre-compute forward rotation in root bone's local space
+    # For root bone: fwd_local = root_rest^-1 @ fwd_world @ root_rest
+    fwd_quat_for_root = None
+    if has_forward and root_is_mapped:
+        root_rest = ref_armature.pose.bones[root_bone_name].bone.matrix_local.to_3x3()
+        fwd_local = root_rest.inverted() @ fwd_rot_3x3 @ root_rest
+        fwd_quat_for_root = fwd_local.to_quaternion()
+        print(f"[BVH2FBX] Forward quat for root: ({fwd_quat_for_root.x:.3f},{fwd_quat_for_root.y:.3f},{fwd_quat_for_root.z:.3f},{fwd_quat_for_root.w:.3f})")
+    
+    # Space conversion matrices for root motion
+    bvh_world_rot = bvh_armature.matrix_world.to_3x3().copy()
+    ref_world_rot_inv = ref_armature.matrix_world.to_3x3().inverted()
+    space_conversion = ref_world_rot_inv @ bvh_world_rot
+    
+    print(f"[BVH2FBX] Space conversion BVH->Ref: {space_conversion}")
+    
     # =========================================================================
     # STEP 4: Switch to POSE mode and set rotation mode to QUATERNION
     # =========================================================================
     bpy.context.view_layer.objects.active = ref_armature
     bpy.ops.object.mode_set(mode='POSE')
-
+    
     for pb in ref_armature.pose.bones:
         pb.rotation_mode = 'QUATERNION'
-
+    
     # =========================================================================
-    # STEP 5: Track which bones were mapped
+    # STEP 5: Create new animation action
+    # =========================================================================
+    if ref_armature.animation_data is None:
+        ref_armature.animation_data_create()
+    
+    action_name = ref_armature.name + "_BVHAction"
+    new_action = bpy.data.actions.new(action_name)
+    ref_armature.animation_data.action = new_action
+    
+    scene.frame_start = 0
+    scene.frame_end = num_frames - 1
+    
+    # =========================================================================
+    # STEP 6: Track mapped/unmapped bones
     # =========================================================================
     mapped_bones = []
     unmapped_bones = []
-
+    
     for pb in get_bones_in_hierarchy_order(ref_armature):
         if pb.name == root_bone_name and not root_is_mapped:
-            continue  # Skip unmapped root (UE5 style)
+            continue
         if pb.name in bone_map:
             mapped_bones.append(pb.name)
         elif pb.name != root_bone_name:
             unmapped_bones.append(pb.name)
-
+    
     print(f"[BVH2FBX] Mapped {len(mapped_bones)} bones, unmapped {len(unmapped_bones)}")
     print(f"[BVH2FBX] Mapped: {mapped_bones}")
-    if unmapped_bones:
-        print(f"[BVH2FBX] Unmapped: {unmapped_bones}")
-
+    
     # =========================================================================
-    # STEP 6: Main retargeting loop — CONJUGATION-BASED TRANSFER
+    # STEP 7: Main retargeting loop — DELTA TRANSFER WITH BASIS CHANGE
     # =========================================================================
-
-    # For quaternion sign consistency across frames (prevents flipping)
     prev_quat = {}
-
-    # Precompute bone hierarchy order for target armature
-    hierarchy_bones = get_bones_in_hierarchy_order(ref_armature)
-
+    
     for fi in range(num_frames):
         frame = frame_start + fi
         scene.frame_set(frame)
         bpy.context.view_layer.update()
-
-        # --- Capture BVH current world rotations for ALL bones ---
-        bvh_curr_world = {}
-        for pb in bvh_armature.pose.bones:
-            bvh_curr_world[pb.name] = pb.matrix.to_3x3().copy()
-
-        # --- Diagnostic logging on first frame ---
+        
+        # Diagnostic on first frame
         if fi == 0:
-            print("[BVH2FBX] === DIAGNOSTIC: Bone mapping ===")
-            for ref_name, bvh_name in sorted(bone_map.items()):
-                ref_pb = ref_armature.pose.bones.get(ref_name)
-                bvh_parent_name = bone_map.get(ref_pb.parent.name) if ref_pb and ref_pb.parent else None
-                print(f"  {ref_name} <- {bvh_name} (bvh_parent={bvh_parent_name})")
-
-            print("[BVH2FBX] === DIAGNOSTIC: Target rest local axes ===")
-            for pb in hierarchy_bones[:5]:
-                rl = target_rest_local[pb.name]
-                # Extract forward axis (typically -Y for Blender bones)
-                print(f"  '{pb.name}': local axes = X({rl[0][0]:.2f},{rl[1][0]:.2f},{rl[2][0]:.2f}) "
-                      f"Y({rl[0][1]:.2f},{rl[1][1]:.2f},{rl[2][1]:.2f}) "
-                      f"Z({rl[0][2]:.2f},{rl[1][2]:.2f},{rl[2][2]:.2f})")
-
-        # --- Process ALL target bones in hierarchy order ---
-        for pb in hierarchy_bones:
+            print("[BVH2FBX] === DIAGNOSTIC: v9.0 Delta Transfer + Basis Change ===")
+        
+        # Process each bone in hierarchy order
+        for pb in get_bones_in_hierarchy_order(ref_armature):
             bvh_name = bone_map.get(pb.name)
-            is_root = (pb.parent is None)
-            is_mapped = (bvh_name is not None and bvh_name in bvh_curr_world
-                         and pb.name in target_rest_local)
-
-            if is_root:
-                # ---- ROOT BONE ----
-                if is_mapped:
-                    # Root: Rot(q) = target_rest_local^(-1) @ fwd_rot @ bvh_curr
-                    R_local = (target_rest_local[pb.name].inverted()
-                               @ fwd_rot_3x3
-                               @ bvh_curr_world[bvh_name])
-                    q = R_local.to_quaternion()
+            
+            if pb.name in bone_map and bvh_name in bvh_armature.pose.bones:
+                bvh_pb = bvh_armature.pose.bones[bvh_name]
+                
+                # --- Read BVH bone's animation delta ---
+                # matrix_basis = the pose transformation (delta from rest) in bone-local space
+                # decompose() safely extracts rotation regardless of rotation mode
+                _loc, delta_bvh_quat, _scl = bvh_pb.matrix_basis.decompose()
+                
+                # --- Apply basis change conjugation ---
+                # delta_target = B @ delta_bvh @ B^-1
+                # This transforms the rotation from BVH's local frame to Mixamo's local frame
+                B = basis_quats[pb.name]
+                B_inv = B.inverted()
+                delta_target = B @ delta_bvh_quat @ B_inv
+                delta_target.normalize()
+                
+                # --- Apply forward rotation for root bone ---
+                if pb.name == root_bone_name and fwd_quat_for_root is not None:
+                    # Apply forward rotation in root bone's local space
+                    delta_target = fwd_quat_for_root @ delta_target
+                    delta_target.normalize()
+                
+                # --- Consistent quaternion sign ---
+                if pb.name in prev_quat:
+                    if delta_target.dot(prev_quat[pb.name]) < 0:
+                        delta_target = -delta_target
                 else:
-                    # Unmapped root: identity rotation
-                    q = mathutils.Quaternion((1, 0, 0, 0))
-
-                pb.rotation_quaternion = q
-
-                # Root motion translation
-                if bvh_root_motion_bone and root_motion_ref_pos:
-                    bone_pos = bvh_root_motion_bone.matrix.translation
-                    disp = bone_pos - root_motion_ref_pos
-                    disp[1] = 0.0  # Zero vertical displacement
-                    disp_corrected = forward_rotation @ disp
-                    pb.location = disp_corrected * scale_factor
+                    if delta_target.w < 0:
+                        delta_target = -delta_target
+                
+                prev_quat[pb.name] = delta_target.copy()
+                pb.rotation_quaternion = delta_target
+                
+                # Diagnostic on first frame
+                if fi == 0:
+                    angle = math.degrees(2 * math.acos(min(1.0, abs(delta_target.w))))
+                    bvh_angle = math.degrees(2 * math.acos(min(1.0, abs(delta_bvh_quat.w))))
+                    print(f"  '{bvh_name}' -> '{pb.name}': "
+                          f"bvh_delta=({delta_bvh_quat.x:.3f},{delta_bvh_quat.y:.3f},{delta_bvh_quat.z:.3f},{delta_bvh_quat.w:.3f}) "
+                          f"target=({delta_target.x:.3f},{delta_target.y:.3f},{delta_target.z:.3f},{delta_target.w:.3f}) "
+                          f"angle={angle:.1f}deg (bvh_angle={bvh_angle:.1f}deg)")
+            
+            else:
+                # UNMAPPED BONE: Keep rest pose (identity rotation)
+                pb.rotation_quaternion = (1, 0, 0, 0)
+            
+            # --- Handle root motion translation for root bone ---
+            if pb.name == root_bone_name:
+                if bvh_hips and bvh_hips_ref_pos:
+                    hips_pos = bvh_hips.matrix.translation
+                    disp_bvh = hips_pos - bvh_hips_ref_pos
+                    # Convert from BVH armature space to Mixamo armature space
+                    disp_ref = space_conversion @ disp_bvh
+                    # Apply forward rotation
+                    disp_fwd = fwd_rot_3x3 @ disp_ref
+                    pb.location = disp_fwd * scale_factor
                 else:
                     pb.location = (0, 0, 0)
-
             else:
-                # ---- CHILD BONE ----
-                if is_mapped:
-                    # Find the BVH parent bone name (through the target parent mapping)
-                    bvh_parent_name = bone_map.get(pb.parent.name)
-
-                    if (bvh_parent_name
-                            and bvh_parent_name in bvh_curr_world):
-                        # Normal case: mapped BVH parent
-                        # Rot(q) = target_rest_local^(-1) @ bvh_parent_curr^(-1) @ bvh_curr
-                        R_local = (target_rest_local[pb.name].inverted()
-                                   @ bvh_curr_world[bvh_parent_name].inverted()
-                                   @ bvh_curr_world[bvh_name])
-                    else:
-                        # Fallback: use BVH bone's actual parent
-                        bvh_pb = bvh_armature.pose.bones.get(bvh_name)
-                        if (bvh_pb and bvh_pb.parent
-                                and bvh_pb.parent.name in bvh_curr_world):
-                            R_local = (target_rest_local[pb.name].inverted()
-                                       @ bvh_curr_world[bvh_pb.parent.name].inverted()
-                                       @ bvh_curr_world[bvh_name])
-                        else:
-                            # Last fallback: world rotation with target rest
-                            R_local = (target_rest_local[pb.name].inverted()
-                                       @ bvh_curr_world[bvh_name])
-
-                    q = R_local.to_quaternion()
-                else:
-                    # Unmapped bone: identity (rest pose)
-                    q = mathutils.Quaternion((1, 0, 0, 0))
-
-                pb.rotation_quaternion = q
                 pb.location = (0, 0, 0)
-
-            # Quaternion sign consistency for smooth interpolation
-            if pb.name in prev_quat:
-                if q.dot(prev_quat[pb.name]) < 0:
-                    q = -q
-                    pb.rotation_quaternion = q
-            prev_quat[pb.name] = q.copy()
-
+            
             pb.keyframe_insert(data_path='rotation_quaternion', frame=fi, group=pb.name)
             pb.keyframe_insert(data_path='location', frame=fi, group=pb.name)
-
+    
     bpy.ops.object.mode_set(mode='OBJECT')
-
+    
     stats = {
         "total_bones": len(ref_armature.pose.bones),
         "mapped_bones": len(mapped_bones),
         "unmapped_bones": unmapped_bones,
         "frame_count": num_frames,
         "fps": scene.render.fps,
-        "has_root_motion": bvh_root_motion_bone is not None,
+        "has_root_motion": bvh_hips is not None,
         "root_bone_name": root_bone_name,
         "root_is_mapped": root_is_mapped,
         "skeleton_type": ref_skeleton_type,
-        "forward_correction": "Yes" if forward_rotation != I4 else "No",
+        "forward_correction": "Yes" if has_forward else "No",
     }
-
+    
     return new_action, stats
 
 
@@ -1339,17 +1174,6 @@ class BVH2FBX_VersionItem(bpy.types.PropertyGroup):
     description: bpy.props.StringProperty(name="Description", default="")
 
 
-class BVH2FBX_UL_versions(bpy.types.UIList):
-    """UI List for displaying available plugin versions."""
-    bl_idname = "BVH2FBX_UL_versions"
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        if item.label:
-            layout.label(text=item.label)
-        else:
-            layout.label(text=item.tag)
-
-
 class BVH2FBX_Properties(bpy.types.PropertyGroup):
     bvh_filepath: bpy.props.StringProperty(
         name="BVH файл",
@@ -1455,7 +1279,7 @@ class BVH2FBX_PT_info_panel(bpy.types.Panel):
         # BVH axis info
         if props.bvh_filepath and os.path.isfile(props.bvh_filepath):
             axis_fwd, axis_up = detect_bvh_axis_convention(props.bvh_filepath)
-            layout.label(text=f"BVH оси: up={axis_up}, fwd={axis_fwd}", icon='ORIENTATION_GLOBAL')
+            layout.label(text=f"BVH оси: up={axis_up}, fwd={axis_fwd}", icon='WORLD')
         else:
             layout.label(text="BVH не выбран", icon='QUESTION')
 
@@ -1475,26 +1299,13 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
 
         layout.label(text=f"Версия: {version_to_string(CURRENT_VERSION)}")
 
-        # Always show check updates button
-        layout.operator("bvh2fbx.check_updates", icon='URL')
+        layout.operator("bvh2fbx.check_updates", icon='WORLD')
 
         if props.update_status:
             layout.label(text=props.update_status)
 
-        # Always show version list and install button
-        # (install button will be grayed out by poll if no versions available)
         if len(props.available_versions) > 0:
-            layout.template_list(
-                "BVH2FBX_UL_versions", "",
-                props, "available_versions",
-                props, "selected_version_index",
-                rows=5,
-            )
-            layout.operator("bvh2fbx.install_update", icon='IMPORT')
-        else:
-            # Show a hint when no versions are loaded yet
-            layout.label(text="Нажмите 'Проверить обновления'", icon='INFO')
-            # Still show install button (will be grayed out by poll)
+            layout.prop(props, "selected_version_index", text="Версия")
             layout.operator("bvh2fbx.install_update", icon='IMPORT')
 
 
@@ -1504,7 +1315,6 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
 
 classes = (
     BVH2FBX_VersionItem,
-    BVH2FBX_UL_versions,
     BVH2FBX_Properties,
     BVH2FBX_OT_convert,
     BVH2FBX_OT_import_skeleton,
