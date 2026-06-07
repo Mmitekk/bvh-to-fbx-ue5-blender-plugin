@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v10.0",
-    "version": (10, 0, 0),
+    "author": "BVH2FBX Converter v13.0",
+    "version": (13, 0, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -196,22 +196,13 @@ ALL_BVH_MAPS_UE5.update(MIXAMO_TO_UE5)
 # ============================================================================
 
 def detect_bvh_axis_convention(filepath):
-    """Auto-detect BVH coordinate system by analyzing bone offsets.
-
-    BVH files store OFFSET values (relative bone positions) which reveal the
-    coordinate system:
-    - Y-up, -Z-forward (standard mocap): Hips offset ≈ (0, H, 0), LeftUpLeg ≈ (L, H, 0)
-    - Z-up, Y-forward (Mixamo/game): Hips offset ≈ (0, 0, H), LeftUpLeg ≈ (L, 0, 0)
-
-    Returns: (axis_forward, axis_up) strings for Blender's BVH importer
-    """
+    """Auto-detect BVH coordinate system by analyzing bone offsets."""
     try:
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
     except Exception:
-        return '-Z', 'Y'  # Default to standard
+        return '-Z', 'Y'
 
-    # Find Hips OFFSET and LeftUpLeg OFFSET
     hips_offset = None
     left_upleg_offset = None
 
@@ -220,9 +211,7 @@ def detect_bvh_axis_convention(filepath):
     while i < len(lines):
         line = lines[i].strip()
 
-        # Find Hips joint
         if line.upper().startswith('JOINT') and 'HIPS' in line.upper():
-            # Next lines should contain OFFSET
             for j in range(i + 1, min(i + 5, len(lines))):
                 offset_line = lines[j].strip()
                 if offset_line.upper().startswith('OFFSET'):
@@ -233,7 +222,6 @@ def detect_bvh_axis_convention(filepath):
                         pass
                     break
 
-        # Find LeftUpLeg joint
         if line.upper().startswith('JOINT') and 'LEFTUPLEG' in line.upper().replace(' ', ''):
             for j in range(i + 1, min(i + 5, len(lines))):
                 offset_line = lines[j].strip()
@@ -251,27 +239,21 @@ def detect_bvh_axis_convention(filepath):
         print("[BVH2FBX] Could not detect axis convention - using default Y-up")
         return '-Z', 'Y'
 
-    # Analyze: which axis is "up" (largest absolute value in Hips offset = height)?
     abs_hips = [abs(hips_offset[0]), abs(hips_offset[1]), abs(hips_offset[2])]
     up_axis_idx = abs_hips.index(max(abs_hips))
 
     if up_axis_idx == 1:
-        # Y is up = standard BVH convention
         print(f"[BVH2FBX] Detected: Y-up (standard mocap) - Hips offset: {hips_offset}")
         return '-Z', 'Y'
     elif up_axis_idx == 2:
-        # Z is up = game/Mixamo convention
         print(f"[BVH2FBX] Detected: Z-up (Mixamo/game) - Hips offset: {hips_offset}")
-        # Determine forward axis from LeftUpLeg
         if left_upleg_offset:
-            # In Z-up: LeftUpLeg should be to the left (+X or -X) with Z ≈ 0
             if abs(left_upleg_offset[1]) > abs(left_upleg_offset[0]) * 2:
-                return 'Y', 'Z'  # Y-forward
+                return 'Y', 'Z'
             else:
-                return '-Y', 'Z'  # -Y-forward
+                return '-Y', 'Z'
         return 'Y', 'Z'
     else:
-        # X is up? Unusual but handle it
         print(f"[BVH2FBX] Detected: X-up (unusual) - Hips offset: {hips_offset}")
         return '-Z', 'X'
 
@@ -281,7 +263,6 @@ def detect_bvh_axis_convention(filepath):
 # ============================================================================
 
 def find_bvh_for_target(bvh_bone_names, target_name, bone_map_dict):
-    """Find the best matching BVH bone name for a target bone name."""
     for bvh_name, mapped_target in bone_map_dict.items():
         if mapped_target == target_name and bvh_name in bvh_bone_names:
             return bvh_name
@@ -289,7 +270,6 @@ def find_bvh_for_target(bvh_bone_names, target_name, bone_map_dict):
 
 
 def find_hips_bone(armature):
-    """Find the Hips/pelvis bone in an armature."""
     candidates = ['Hips', 'hips', 'hip', 'Pelvis', 'pelvis',
                   'mixamorig:Hips']
     for name in candidates:
@@ -302,7 +282,6 @@ def find_hips_bone(armature):
 
 
 def get_bones_in_hierarchy_order(armature):
-    """Get pose bones in parent-first hierarchical order."""
     ordered = []
     visited = set()
 
@@ -321,7 +300,6 @@ def get_bones_in_hierarchy_order(armature):
 
 
 def find_root_bone(armature):
-    """Find the root bone (bone with no parent)."""
     for candidate in ['root', 'Root']:
         if candidate in armature.pose.bones:
             pb = armature.pose.bones[candidate]
@@ -334,38 +312,22 @@ def find_root_bone(armature):
 
 
 def detect_skeleton_type(armature):
-    """Detect whether an armature is UE5 Quinn, Mixamo, or unknown.
-
-    Returns: 'ue5', 'mixamo', or 'unknown'
-    """
     bone_names = set(armature.pose.bones.keys())
-
-    # Check for Mixamo prefix
     mixamorig_count = sum(1 for n in bone_names if n.startswith('mixamorig:'))
     if mixamorig_count > 5:
         return 'mixamo'
-
-    # Check for UE5 Quinn bones
     ue5_markers = {'pelvis', 'spine_01', 'thigh_l', 'calf_l', 'upperarm_l'}
     ue5_match = len(ue5_markers & bone_names)
     if ue5_match >= 3:
         return 'ue5'
-
     return 'unknown'
 
 
 def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
-    """Build bone mapping: ref_bone_name -> bvh_bone_name.
-
-    For Mixamo target: direct name matching (1:1)
-    For UE5 target: use BVH_TO_UE5 / MIXAMO_TO_UE5 lookup tables
-    """
     bvh_bone_names = set(bvh_armature.pose.bones.keys())
     bone_map = {}
 
     if ref_skeleton_type == 'mixamo':
-        # Direct name matching: BVH mixamorig:Name → ref mixamorig:Name
-        # Also handle standard BVH names → mixamorig:Name
         STANDARD_TO_MIXAMO = {
             'Hips': 'mixamorig:Hips',
             'Spine': 'mixamorig:Spine',
@@ -392,7 +354,6 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
             'RightFoot': 'mixamorig:RightFoot',
             'RightToeBase': 'mixamorig:RightToeBase',
             'RightToe': 'mixamorig:RightToeBase',
-            # Finger mappings
             'LeftHandThumb1': 'mixamorig:LeftHandThumb1',
             'LeftHandThumb2': 'mixamorig:LeftHandThumb2',
             'LeftHandThumb3': 'mixamorig:LeftHandThumb3',
@@ -426,17 +387,14 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
         }
 
         for pb in ref_armature.pose.bones:
-            # Direct match: same name in BVH
             if pb.name in bvh_bone_names:
                 bone_map[pb.name] = pb.name
             else:
-                # Try standard → mixamorig mapping
                 for std_name, mix_name in STANDARD_TO_MIXAMO.items():
                     if mix_name == pb.name and std_name in bvh_bone_names:
                         bone_map[pb.name] = std_name
                         break
     else:
-        # UE5 or unknown: use lookup tables
         for pb in ref_armature.pose.bones:
             bvh_match = find_bvh_for_target(bvh_bone_names, pb.name, ALL_BVH_MAPS_UE5)
             if bvh_match:
@@ -446,57 +404,50 @@ def build_bone_map(bvh_armature, ref_armature, ref_skeleton_type):
 
 
 # ============================================================================
-# RETARGETING ENGINE v10.0 — CONSTRAINT-BASED BAKE
+# RETARGETING ENGINE v13.0 — REST-POSE COMPOSITION
 # ============================================================================
 #
-# WHY ALL PREVIOUS APPROACHES FAILED (v4-v9):
+# WHY v12.0 FAILED (conjugation bug):
 #
-# v4-v9 all tried to MANUALLY compute rotation transforms between the BVH
-# skeleton and the Mixamo skeleton. Every approach — armature-local, delta
-# parent, conjugation, basis change — produced distorted results because
-# transferring rotations between bones with different rest poses requires
-# extremely precise math. Small errors in basis change computation or
-# quaternion decomposition compound through the bone chain, producing
-# completely distorted animations.
+# v12.0 used quaternion conjugation: mix_quat = Q @ bvh_quat @ Q^-1
+# This is mathematically WRONG for retargeting.
 #
-# THE v10.0 APPROACH — CONSTRAINT-BASED BAKE:
+# Conjugation (Q @ q @ Q^-1) changes the BASIS of a rotation transform.
+# But retargeting requires COMPOSITION of rotations, not basis change.
 #
-# Instead of doing the math ourselves, we delegate ALL rotation computation
-# to Blender's own constraint system, which handles it correctly.
+# THE CORRECT FORMULA (v13.0):
 #
-# Algorithm:
-#   1. Import BVH → creates armature_bvh with animation
-#   2. Detect forward direction from BVH Hips trajectory
-#   3. Apply forward rotation to BVH armature's object transform
-#      (rotates the entire BVH animation so the character faces -Y)
-#   4. Add Copy Transforms constraints to Mixamo bones:
-#      - Target: BVH armature, subtarget: corresponding BVH bone
-#      - Target space: WORLD, Owner space: WORLD
-#      This makes each Mixamo bone follow its BVH counterpart exactly
-#   5. Bake the constrained animation into keyframes
-#      - Use bpy.ops.nla.bake (Blender's built-in, with manual fallback)
-#      - visual_keying=True: record the constrained (visual) transform
-#      - clear_constraints=True: remove constraints after baking
-#   6. Post-process: normalize root bone location so animation starts at rest
-#   7. Clean up
+# We need: mix_rest_rot @ mix_basis_rot = bvh_rest_rot @ bvh_basis_rot
+#   (same world-space rotation on both skeletons)
 #
-# Why this works:
-#   - Copy Transforms (WORLD→WORLD) makes each Mixamo bone match the BVH
-#     bone's world-space transform EXACTLY
-#   - Blender's own constraint evaluation handles all rotation math correctly
-#   - The bake process correctly decomposes the visual transform into local
-#     channels (rotation_quaternion, location) for the Mixamo bone
-#   - Forward rotation is applied at the BVH armature's object level,
-#     so it affects all bones uniformly through the constraint system
+# Solving: mix_basis_rot = mix_rest_rot^-1 @ bvh_rest_rot @ bvh_basis_rot
+#        = Q @ bvh_basis_rot
+#   where Q = mix_rest_rot^-1 @ bvh_rest_rot
+#
+# This is SIMPLE MULTIPLICATION, not conjugation!
+#
+# For root bone: Q = mix_global_rest^-1 @ bvh_global_rest
+# For child bone: Q = mix_chain_rest^-1 @ bvh_chain_rest
+#   where chain_rest = parent.matrix_local^-1 @ child.matrix_local
+#
+# For root location:
+#   mix_loc = Q @ bvh_loc  (rotate location vector by Q)
+#
+# Forward rotation is applied in BONE-LOCAL space (not armature space)
+# to prevent the diagonal walking bug from v7-v11.
+#
 
 
 def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
-    """Retarget animation using Blender's constraint system (v10.0).
+    """Retarget animation using rest-pose composition (v13.0).
 
-    Strategy: CONSTRAINT-BASED BAKE
-    Add Copy Transforms constraints (WORLD→WORLD) to each Mixamo bone,
-    then bake the constrained animation into keyframes.
-    Blender handles ALL rotation math internally.
+    Reads BVH bone's matrix_basis directly and converts rotation to
+    Mixamo bone's local space via composition:
+        mix_quat = Q @ bvh_quat
+    where Q = mix_rest_quat^-1 @ bvh_rest_quat
+
+    This ensures: mix_rest @ mix_quat = bvh_rest @ bvh_quat
+    (same world-space rotation on both skeletons)
 
     Args:
         bvh_armature: Blender armature with BVH animation
@@ -507,8 +458,6 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         (action, stats_dict)
     """
     scene = bpy.context.scene
-    I3 = mathutils.Matrix.Identity(3)
-    I4 = mathutils.Matrix.Identity(4)
 
     # Detect target skeleton type
     ref_skeleton_type = detect_skeleton_type(ref_armature)
@@ -532,7 +481,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     frame_end = int(bvh_action.frame_range[1])
     num_frames = frame_end - frame_start + 1
 
-    # Find BVH Hips bone for root motion / forward direction
+    # Find BVH Hips bone for forward direction detection
     bvh_hips = find_hips_bone(bvh_armature)
 
     # Find root bone in target armature
@@ -548,24 +497,20 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     # =========================================================================
     # STEP 1: Detect forward direction from BVH Hips displacement
     # =========================================================================
-    forward_rotation = I4.copy()
-    fwd_rot_3x3 = I3.copy()
-    has_forward = False
+    forward_quat = None
+    forward_angle = 0.0
 
-    scene.frame_set(frame_start)
-    bpy.context.view_layer.update()
+    if bvh_hips and num_frames > 1:
+        scene.frame_set(frame_start)
+        bpy.context.view_layer.update()
+        start_pos = bvh_hips.matrix.translation.copy()
 
-    bvh_hips_start_pos = None
-    if bvh_hips:
-        bvh_hips_start_pos = bvh_hips.matrix.translation.copy()
-
-    if bvh_hips and num_frames > 1 and bvh_hips_start_pos:
         scene.frame_set(frame_end)
         bpy.context.view_layer.update()
-        bvh_hips_end_pos = bvh_hips.matrix.translation.copy()
+        end_pos = bvh_hips.matrix.translation.copy()
 
-        walk_dir = bvh_hips_end_pos - bvh_hips_start_pos
-        walk_dir.z = 0  # Zero out vertical component
+        walk_dir = end_pos - start_pos
+        walk_dir.z = 0  # Ignore vertical component
 
         if walk_dir.length > 0.001:
             walk_dir.normalize()
@@ -573,64 +518,33 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             target_dir = mathutils.Vector((0, -1, 0))
 
             dot = walk_dir.dot(target_dir)
-            if dot < -0.9999:
-                forward_rotation = mathutils.Matrix.Rotation(math.pi, 4, 'Z')
-            elif dot < 0.9999:
+            dot = max(-1.0, min(1.0, dot))
+
+            if dot > 0.9999:
+                pass  # Already facing the right direction
+            elif dot < -0.9999:
+                forward_quat = mathutils.Quaternion((0, 0, 1), math.pi)
+                forward_angle = 180.0
+            else:
                 axis = walk_dir.cross(target_dir)
                 if axis.length > 0.0001:
                     axis.normalize()
-                    angle = math.acos(max(-1.0, min(1.0, dot)))
-                    forward_rotation = mathutils.Matrix.Rotation(angle, 4, axis)
+                    angle = math.acos(dot)
+                    forward_quat = mathutils.Quaternion(axis, angle)
+                    forward_angle = math.degrees(angle)
 
-            fwd_rot_3x3 = forward_rotation.to_3x3()
-            has_forward = True
-
-            print(f"[BVH2FBX] Walk direction: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f})")
-            dot_clamped = max(-1.0, min(1.0, dot))
-            print(f"[BVH2FBX] Forward correction: {math.degrees(math.acos(dot_clamped)):.1f} degrees")
+            if forward_quat:
+                print(f"[BVH2FBX] Walk direction: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f})")
+                print(f"[BVH2FBX] Forward correction: {forward_angle:.1f} degrees")
 
     # =========================================================================
-    # STEP 2: Apply forward rotation to BVH armature's object transform
+    # STEP 2: Prepare Mixamo armature for retargeting
     # =========================================================================
-    # This rotates the entire BVH animation so the character walks in -Y.
-    # The Copy Transforms constraints will then copy the rotated transforms.
-    if has_forward:
-        loc, rot, scale = bvh_armature.matrix_world.decompose()
-        new_rot = forward_rotation.to_quaternion() @ rot
-        bvh_armature.matrix_world = mathutils.Matrix.LocRotScale(loc, new_rot, scale)
-        print(f"[BVH2FBX] Applied forward rotation to BVH armature")
-
-    # =========================================================================
-    # STEP 3: Save ref armature's original world transform, then align to BVH
-    # =========================================================================
-    # For Copy Transforms (WORLD→WORLD) to work correctly, both armatures
-    # should be at the same world position. We temporarily move the ref
-    # armature to match the BVH armature's position.
-    ref_orig_matrix_world = ref_armature.matrix_world.copy()
-    ref_armature.matrix_world = bvh_armature.matrix_world.copy()
-
-    # =========================================================================
-    # STEP 4: Add Copy Transforms constraints to Mixamo bones
-    # =========================================================================
-    constraints_added = []
-    for ref_name, bvh_name in bone_map.items():
-        if bvh_name not in bvh_armature.pose.bones:
-            continue
-        ref_pb = ref_armature.pose.bones[ref_name]
-        con = ref_pb.constraints.new('COPY_TRANSFORMS')
-        con.target = bvh_armature
-        con.subtarget = bvh_name
-        con.target_space = 'WORLD'
-        con.owner_space = 'WORLD'
-        constraints_added.append(ref_name)
-
-    print(f"[BVH2FBX] Added {len(constraints_added)} Copy Transforms constraints")
-
-    # =========================================================================
-    # STEP 5: Prepare Mixamo armature for baking
-    # =========================================================================
-    bpy.context.view_layer.objects.active = ref_armature
-    bpy.ops.object.mode_set(mode='POSE')
+    try:
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+    except Exception:
+        pass
 
     # Set rotation mode to QUATERNION for all bones
     for pb in ref_armature.pose.bones:
@@ -640,97 +554,200 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     if ref_armature.animation_data is None:
         ref_armature.animation_data_create()
 
-    # Remove old action if exists, create a fresh one for baking
     old_action = ref_armature.animation_data.action
     if old_action:
         ref_armature.animation_data.action = None
+
     action_name = ref_armature.name + "_BVHAction"
     new_action = bpy.data.actions.new(action_name)
     ref_armature.animation_data.action = new_action
 
-    # Select mapped bones for baking
-    bpy.ops.pose.select_all(action='DESELECT')
-    for ref_name in bone_map:
-        if ref_name in ref_armature.pose.bones:
-            ref_armature.pose.bones[ref_name].bone.select = True
+    # =========================================================================
+    # STEP 3: Pre-compute rest pose data and conversion quaternions
+    # =========================================================================
+    # BVH rest matrices (bone.matrix_local = rest in armature space)
+    bvh_rest = {}
+    bvh_local_rest = {}  # bone's rest matrix relative to parent
+    for pb in bvh_armature.pose.bones:
+        bvh_rest[pb.name] = pb.bone.matrix_local.copy()
+        if pb.parent:
+            bvh_local_rest[pb.name] = (
+                pb.parent.bone.matrix_local.inverted() @ pb.bone.matrix_local
+            )
+        else:
+            bvh_local_rest[pb.name] = pb.bone.matrix_local.copy()
 
-    # Also select root bone even if not in map (for root motion)
+    # Mixamo rest matrices
+    mix_rest = {}
+    mix_local_rest = {}  # bone's rest matrix relative to parent
+    for pb in ref_armature.pose.bones:
+        mix_rest[pb.name] = pb.bone.matrix_local.copy()
+        if pb.parent:
+            mix_local_rest[pb.name] = (
+                pb.parent.bone.matrix_local.inverted() @ pb.bone.matrix_local
+            )
+        else:
+            mix_local_rest[pb.name] = pb.bone.matrix_local.copy()
+
+    # Pre-compute Q quaternion for each mapped bone pair.
+    # Q converts animation rotation from BVH local space to Mixamo local space
+    # via conjugation: mix_quat = Q @ bvh_quat @ Q^-1
+    # For root bone: Q = mix_global_rest_rot^-1 @ bvh_global_rest_rot
+    # For child bone: Q = mix_local_rest_rot^-1 @ bvh_local_rest_rot
+    Q_map = {}  # ref_bone_name -> Q quaternion
+    for ref_name, bvh_name in bone_map.items():
+        if ref_name not in ref_armature.pose.bones:
+            continue
+        if bvh_name not in bvh_armature.pose.bones:
+            continue
+
+        ref_pb = ref_armature.pose.bones[ref_name]
+
+        if ref_pb.parent is None:
+            # Root bone: use global rest rotation
+            mix_rest_quat = mix_rest[ref_name].to_quaternion()
+            bvh_rest_quat = bvh_rest[bvh_name].to_quaternion()
+        else:
+            # Child bone: use local rest rotation (relative to parent)
+            mix_rest_quat = mix_local_rest[ref_name].to_quaternion()
+            bvh_rest_quat = bvh_local_rest[bvh_name].to_quaternion()
+
+        Q = mix_rest_quat.inverted() @ bvh_rest_quat
+        Q.normalize()
+        Q_map[ref_name] = Q
+
+    # Pre-compute forward rotation in root bone's LOCAL space.
+    # The forward_quat is in armature space, but we need it in the root
+    # bone's local frame so we can apply it directly to rotation_quaternion
+    # and location keyframes. Without this conversion, the forward rotation
+    # was being applied to bone-local values using armature-space rotation,
+    # causing the diagonal walking bug in v7-v11.
+    F_local = None
+    if forward_quat and root_bone_name and root_bone_name in mix_rest:
+        mix_root_rest_quat = mix_rest[root_bone_name].to_quaternion()
+        # Conjugate forward_quat into root bone's local frame:
+        # F_local = mix_rest^-1 @ forward @ mix_rest
+        F_local = mix_root_rest_quat.inverted() @ forward_quat @ mix_root_rest_quat
+        F_local.normalize()
+        print(f"[BVH2FBX] Forward rotation converted to root bone local space")
+
+    # Debug: print Q values for key bones to help diagnose retargeting issues
+    key_bones_debug = ['mixamorig:Hips', 'mixamorig:Spine', 'mixamorig:Head',
+                       'mixamorig:LeftUpLeg', 'mixamorig:RightUpLeg',
+                       'mixamorig:LeftArm', 'mixamorig:RightArm']
+    for kb in key_bones_debug:
+        if kb in Q_map:
+            q = Q_map[kb]
+            angle = math.degrees(2 * math.acos(min(1.0, abs(q.w))))
+            print(f"[BVH2FBX] Q for {kb}: angle={angle:.1f}° axis=({q.axis.x:.2f},{q.axis.y:.2f},{q.axis.z:.2f})")
+
+    # Get bones in hierarchy order
+    ordered_bones = get_bones_in_hierarchy_order(ref_armature)
+
+    # =========================================================================
+    # STEP 4: Retarget animation frame by frame
+    # =========================================================================
+    identity_quat = mathutils.Quaternion((1, 0, 0, 0))
+    zero_vec = mathutils.Vector((0, 0, 0))
+
+    for fi in range(num_frames):
+        frame = frame_start + fi
+        scene.frame_set(frame)
+        bpy.context.view_layer.update()
+
+        for ref_pb in ordered_bones:
+            if ref_pb.name in bone_map and ref_pb.name in Q_map:
+                bvh_name = bone_map[ref_pb.name]
+                Q = Q_map[ref_pb.name]
+
+                if bvh_name not in bvh_armature.pose.bones:
+                    # BVH bone not found, keep rest pose
+                    ref_pb.rotation_quaternion = identity_quat.copy()
+                    ref_pb.location = zero_vec.copy()
+                else:
+                    bvh_pb = bvh_armature.pose.bones[bvh_name]
+
+                    # Read BVH bone's LOCAL animation (matrix_basis).
+                    # This is the animation offset from rest pose,
+                    # in the bone's own local coordinate frame.
+                    bvh_basis = bvh_pb.matrix_basis.copy()
+                    bvh_loc, bvh_quat, _ = bvh_basis.decompose()
+
+                    # Normalize BVH quaternion
+                    if bvh_quat.magnitude > 0.0001:
+                        bvh_quat = bvh_quat.normalized()
+                    else:
+                        bvh_quat = identity_quat.copy()
+
+                    # Convert rotation to Mixamo bone's local space
+                    # using rest-pose composition:
+                    #   mix_quat = Q @ bvh_quat
+                    # where Q = mix_rest^-1 @ bvh_rest
+                    # This ensures: mix_rest @ mix_quat = bvh_rest @ bvh_quat
+                    # (same world-space rotation on both skeletons)
+                    mix_quat = Q @ bvh_quat
+                    mix_quat.normalize()
+
+                    if ref_pb.parent is None:
+                        # Root bone: also convert location.
+                        # The BVH root's location is in BVH root's local frame,
+                        # we need it in Mixamo root's local frame:
+                        #   mix_loc = Q @ bvh_loc
+                        mix_loc = Q @ bvh_loc
+
+                        # Apply forward rotation in BONE-LOCAL space.
+                        # This fixes the diagonal walking bug from v7-v11
+                        # where forward rotation was incorrectly applied
+                        # in armature space to bone-local keyframe values.
+                        if F_local:
+                            mix_quat = F_local @ mix_quat
+                            mix_loc = F_local @ mix_loc
+
+                        # Scale location for root motion
+                        mix_loc = mix_loc * scale_factor
+
+                        ref_pb.location = mix_loc
+                    else:
+                        # Child bone: location is always (0,0,0) because
+                        # position is determined by parent chain + rest offset.
+                        # BVH bone lengths differ from Mixamo, so we can't
+                        # transfer location offsets between skeletons.
+                        ref_pb.location = zero_vec.copy()
+
+                    ref_pb.rotation_quaternion = mix_quat
+            else:
+                # Unmapped bone: keep rest pose
+                ref_pb.rotation_quaternion = identity_quat.copy()
+                ref_pb.location = zero_vec.copy()
+
+            # Keyframe
+            ref_pb.keyframe_insert(
+                data_path='rotation_quaternion', frame=fi, group=ref_pb.name
+            )
+            ref_pb.keyframe_insert(
+                data_path='location', frame=fi, group=ref_pb.name
+            )
+
+    print(f"[BVH2FBX] Retargeted {num_frames} frames for {len(bone_map)} bone pairs")
+
+    # =========================================================================
+    # STEP 5: Normalize root bone location (start at origin)
+    # =========================================================================
     if root_bone_name in ref_armature.pose.bones:
-        ref_armature.pose.bones[root_bone_name].bone.select = True
-
-    # =========================================================================
-    # STEP 6: Bake the constrained animation into keyframes
-    # =========================================================================
-    bake_method = "unknown"
-    try:
-        # Try Blender's built-in NLA bake
-        bpy.ops.nla.bake(
-            frame_start=frame_start,
-            frame_end=frame_end,
-            step=1,
-            only_selected=True,
-            visual_keying=True,
-            clear_constraints=True,
-            clear_parents=False,
-            use_current_action=True,
-            bake_types={'POSE'},
-        )
-        bake_method = "nla_bake"
-        print(f"[BVH2FBX] Baked animation using bpy.ops.nla.bake")
-    except Exception as e:
-        print(f"[BVH2FBX] NLA bake failed: {e}, falling back to manual bake")
-
-        # Manual fallback: read constrained visual transforms per frame
-        _manual_bake_constraints(ref_armature, bone_map, frame_start, frame_end)
-
-        # Remove constraints manually
-        for ref_name in constraints_added:
-            pb = ref_armature.pose.bones[ref_name]
-            for con in list(pb.constraints):
-                if con.type == 'COPY_TRANSFORMS':
-                    pb.constraints.remove(con)
-        bake_method = "manual_bake"
-
-    # =========================================================================
-    # STEP 7: Restore ref armature's original world transform
-    # =========================================================================
-    bpy.ops.object.mode_set(mode='OBJECT')
-    ref_armature.matrix_world = ref_orig_matrix_world
-
-    # =========================================================================
-    # STEP 8: Post-process baked animation
-    # =========================================================================
-    action = ref_armature.animation_data.action if ref_armature.animation_data else None
-    if action:
-        # 8a: Shift keyframes so animation starts from frame 0
-        #     (BVH animations often start at frame 1, we want frame 0)
-        if frame_start > 0:
-            for fcurve in action.fcurves:
-                for kp in fcurve.keyframe_points:
-                    kp.co[0] -= frame_start
-                    if kp.handle_left:
-                        kp.handle_left[0] -= frame_start
-                    if kp.handle_right:
-                        kp.handle_right[0] -= frame_start
-            for fcurve in action.fcurves:
-                fcurve.update()
-            print(f"[BVH2FBX] Shifted keyframes by -{frame_start} (now start from frame 0)")
-
-        # 8b: Normalize root bone location so first frame starts at (0,0,0)
-        if root_bone_name in ref_armature.pose.bones:
-            _normalize_root_location(ref_armature, root_bone_name, action)
+        _normalize_root_location(ref_armature, root_bone_name, new_action)
 
     # Set scene frame range
     scene.frame_start = 0
     scene.frame_end = num_frames - 1
 
-    # Track mapped/unmapped bones
+    # Stats
     mapped_bones = [n for n in bone_map if n in ref_armature.pose.bones]
-    unmapped_bones = [pb.name for pb in ref_armature.pose.bones
-                      if pb.name not in bone_map and pb.name != root_bone_name]
+    unmapped_bones = [
+        pb.name for pb in ref_armature.pose.bones
+        if pb.name not in bone_map and pb.name != root_bone_name
+    ]
 
     print(f"[BVH2FBX] Mapped {len(mapped_bones)} bones, unmapped {len(unmapped_bones)}")
-    print(f"[BVH2FBX] Bake method: {bake_method}")
 
     stats = {
         "total_bones": len(ref_armature.pose.bones),
@@ -742,78 +759,17 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         "root_bone_name": root_bone_name,
         "root_is_mapped": root_is_mapped,
         "skeleton_type": ref_skeleton_type,
-        "forward_correction": "Yes" if has_forward else "No",
-        "bake_method": bake_method,
+        "forward_correction": f"{forward_angle:.1f} deg" if forward_quat else "No",
+        "bake_method": "rest_pose_composition_v13",
     }
 
-    return action, stats
-
-
-def _manual_bake_constraints(ref_armature, bone_map, frame_start, frame_end):
-    """Manual bake: read constrained visual transforms and keyframe them.
-
-    Used as a fallback when bpy.ops.nla.bake is not available.
-    For each frame, reads the bone's visual transform (which includes
-    the Copy Transforms constraint) and decomposes it into local channels.
-    """
-    scene = bpy.context.scene
-    num_frames = frame_end - frame_start + 1
-
-    # Create a new action
-    if ref_armature.animation_data is None:
-        ref_armature.animation_data_create()
-    action_name = ref_armature.name + "_BVHAction"
-    new_action = bpy.data.actions.new(action_name)
-    ref_armature.animation_data.action = new_action
-
-    for fi in range(num_frames):
-        frame = frame_start + fi
-        scene.frame_set(frame)
-        bpy.context.view_layer.update()
-
-        for pb in get_bones_in_hierarchy_order(ref_armature):
-            if pb.name in bone_map:
-                # Read the constrained visual transform
-                visual_matrix = pb.matrix.copy()
-
-                # Compute matrix_basis from visual transform
-                # For root bone: matrix_basis = bone.matrix_local^-1 @ visual_matrix
-                # For child bone: need to account for parent's visual transform
-                if pb.parent:
-                    parent_visual = pb.parent.matrix
-                    # Local rest: how this bone relates to parent in rest pose
-                    local_rest = pb.parent.bone.matrix_local.inverted() @ pb.bone.matrix_local
-                    # matrix_basis: the animation delta in bone-local space
-                    matrix_basis = local_rest.inverted() @ parent_visual.inverted() @ visual_matrix
-                else:
-                    matrix_basis = pb.bone.matrix_local.inverted() @ visual_matrix
-
-                # Decompose into channels
-                loc, quat, scl = matrix_basis.decompose()
-                pb.rotation_quaternion = quat
-                pb.location = loc
-            else:
-                # Unmapped bone: keep rest pose
-                pb.rotation_quaternion = (1, 0, 0, 0)
-                pb.location = (0, 0, 0)
-
-            # Keyframe
-            pb.keyframe_insert(data_path='rotation_quaternion', frame=fi, group=pb.name)
-            pb.keyframe_insert(data_path='location', frame=fi, group=pb.name)
+    return new_action, stats
 
 
 def _normalize_root_location(ref_armature, root_bone_name, action):
-    """Offset root bone location so the first frame starts at (0,0,0).
-
-    After baking with Copy Transforms, the root bone's location includes
-    the absolute position of the BVH Hips. We subtract the first frame's
-    location so the animation starts at the rest position and all subsequent
-    frames contain only the displacement from the first frame.
-    """
-    # Find the location data path for the root bone
+    """Offset root bone location so the first frame starts at (0,0,0)."""
     loc_data_path = f'pose.bones["{root_bone_name}"].location'
 
-    # Find the location fcurves
     loc_curves = {}
     for fcurve in action.fcurves:
         if fcurve.data_path == loc_data_path:
@@ -823,7 +779,7 @@ def _normalize_root_location(ref_armature, root_bone_name, action):
         print(f"[BVH2FBX] No location curves found for root bone '{root_bone_name}'")
         return
 
-    # Get the first frame's location values (find minimum frame across all curves)
+    # Get the first frame's location values
     min_frame = None
     for fcurve in loc_curves.values():
         if fcurve.keyframe_points:
@@ -841,7 +797,6 @@ def _normalize_root_location(ref_armature, root_bone_name, action):
                 first_loc[idx] = kp.co[1]
                 break
 
-    # Only normalize if there's a meaningful offset
     if first_loc.length < 0.0001:
         print(f"[BVH2FBX] Root bone location already at origin, no normalization needed")
         return
@@ -852,13 +807,11 @@ def _normalize_root_location(ref_armature, root_bone_name, action):
     for idx, fcurve in loc_curves.items():
         for kp in fcurve.keyframe_points:
             kp.co[1] -= first_loc[idx]
-            # Also adjust handle values
             if kp.handle_left:
                 kp.handle_left[1] -= first_loc[idx]
             if kp.handle_right:
                 kp.handle_right[1] -= first_loc[idx]
 
-    # Update the action to reflect changes
     for fcurve in action.fcurves:
         fcurve.update()
 
@@ -937,6 +890,9 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         # Step 1: Import BVH with auto-detected axis settings
         self.report({'INFO'}, "Импорт BVH файла...")
         try:
+            # Ensure we're in OBJECT mode before import
+            if bpy.context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
             bpy.ops.object.select_all(action='DESELECT')
             bpy.ops.import_anim.bvh(
                 filepath=props.bvh_filepath,
@@ -977,9 +933,8 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         except Exception as e:
             import traceback
             self.report({'ERROR'}, f"Ошибка ретаргетинга: {e}\n{traceback.format_exc()}")
-            bpy.ops.object.select_all(action='DESELECT')
-            bvh_armature.select_set(True)
-            bpy.ops.object.delete()
+            # Context-safe cleanup: avoid bpy.ops in error handler
+            _safe_delete_object(bvh_armature)
             if orig_action and ref_armature.animation_data:
                 ref_armature.animation_data.action = orig_action
             return {'CANCELLED'}
@@ -987,18 +942,25 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         if action is None:
             error = stats.get('error', 'Unknown error')
             self.report({'ERROR'}, f"Ретаргетинг не удался: {error}")
-            bpy.ops.object.select_all(action='DESELECT')
-            bvh_armature.select_set(True)
-            bpy.ops.object.delete()
+            _safe_delete_object(bvh_armature)
             return {'CANCELLED'}
 
         # Step 3: Clean up - remove BVH armature
-        bpy.ops.object.select_all(action='DESELECT')
-        bvh_armature.select_set(True)
-        bpy.ops.object.delete()
+        _safe_delete_object(bvh_armature)
 
         # Step 4: Make reference armature active
-        bpy.ops.object.select_all(action='DESELECT')
+        try:
+            if bpy.context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            pass
+        # Context-safe deselect: avoid bpy.ops.object.select_all which
+        # fails with RuntimeError in Blender 5.1 when context is incorrect
+        try:
+            for obj in context.scene.objects:
+                obj.select_set(False)
+        except Exception:
+            pass
         ref_armature.select_set(True)
         context.view_layer.objects.active = ref_armature
 
@@ -1037,14 +999,32 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         root_mapped = "Да" if stats.get('root_is_mapped') else "Нет"
         fwd_corr = stats.get('forward_correction', '?')
         skel = stats.get('skeleton_type', '?')
-        bake = stats.get('bake_method', '?')
         self.report({'INFO'},
-                     f"Готово! v10.0 Скелет: {skel}, Костей: {total}, Сопоставлено: {mapped}, "
+                     f"Готово! v13.0 Скелет: {skel}, Костей: {total}, Сопоставлено: {mapped}, "
                      f"Кадров: {stats.get('frame_count', 0)}, "
                      f"Root Motion: {root_motion} (bone: {root_name}), "
-                     f"Направление: {fwd_corr}, Bake: {bake}")
+                     f"Направление: {fwd_corr}")
 
         return {'FINISHED'}
+
+
+def _safe_delete_object(obj):
+    """Delete an object safely without relying on bpy.ops (context-safe)."""
+    try:
+        # Deselect everything first
+        for o in bpy.data.objects:
+            o.select_set(False)
+        obj.select_set(True)
+        bpy.ops.object.delete(use_global=False)
+    except Exception:
+        # If bpy.ops fails, try removing from scene directly
+        try:
+            for scene in bpy.data.scenes:
+                if obj.name in scene.collection.objects:
+                    scene.collection.objects.unlink(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+        except Exception as e:
+            print(f"[BVH2FBX] Warning: could not delete {obj.name}: {e}")
 
 
 class BVH2FBX_OT_import_skeleton(bpy.types.Operator):
