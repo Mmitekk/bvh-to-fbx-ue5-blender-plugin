@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v13.1",
-    "version": (13, 1, 0),
+    "author": "BVH2FBX Converter v13.2",
+    "version": (13, 2, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "Конвертация BVH motion capture в FBX анимацию для Unreal Engine 5 с сохранением Root Motion",
@@ -848,6 +848,9 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.bvh2fbx_props
 
+        # Print version for debugging - confirms which version is actually running
+        print(f"[BVH2FBX] === Conversion started: v{version_to_string(CURRENT_VERSION)} ===")
+
         # Validate BVH file
         if not os.path.isfile(props.bvh_filepath):
             self.report({'ERROR'}, f"BVH файл не найден: {props.bvh_filepath}")
@@ -1005,7 +1008,7 @@ class BVH2FBX_OT_convert(bpy.types.Operator):
         fwd_corr = stats.get('forward_correction', '?')
         skel = stats.get('skeleton_type', '?')
         self.report({'INFO'},
-                     f"Готово! v13.0 Скелет: {skel}, Костей: {total}, Сопоставлено: {mapped}, "
+                     f"Готово! v{version_to_string(CURRENT_VERSION)} Скелет: {skel}, Костей: {total}, Сопоставлено: {mapped}, "
                      f"Кадров: {stats.get('frame_count', 0)}, "
                      f"Root Motion: {root_motion} (bone: {root_name}), "
                      f"Направление: {fwd_corr}")
@@ -1198,18 +1201,22 @@ class BVH2FBX_OT_install_update(bpy.types.Operator):
             shutil.copy2(current_addon_path, backup_path)
             shutil.move(new_addon_path, current_addon_path)
 
-            # Reload the addon immediately without requiring Blender restart
+            # Try to reload the addon without restarting Blender.
+            # Do NOT use bpy.ops.preferences.addon_disable/enable because
+            # disabling the currently-running addon can crash Blender.
+            # Instead, use importlib.reload which is safer.
             try:
+                import importlib
+                import sys
                 addon_module_name = __name__
-                # Disable then re-enable the addon to reload it
-                bpy.ops.preferences.addon_disable(module=addon_module_name)
-                bpy.ops.preferences.addon_enable(module=addon_module_name)
-                self.report({'INFO'}, f"Обновлено до {target_tag}! Плагин перезагружен.")
-                props.update_status = f"Обновлено до {target_tag}! Плагин перезагружен."
+                if addon_module_name in sys.modules:
+                    importlib.reload(sys.modules[addon_module_name])
+                self.report({'INFO'}, f"Обновлено до {target_tag}! Перезапустите Blender для полного применения.")
+                props.update_status = f"Обновлено до {target_tag}! Перезапустите Blender."
             except Exception as reload_err:
                 self.report({'INFO'}, f"Обновлено до {target_tag}! Перезапустите Blender для применения.")
                 props.update_status = f"Обновлено до {target_tag}! Перезапустите Blender."
-                print(f"[BVH2FBX] Auto-reload failed: {reload_err}. Manual restart needed.")
+                print(f"[BVH2FBX] Reload note: {reload_err}. Manual restart needed.")
 
         except Exception as e:
             if os.path.exists(backup_path):
