@@ -1509,12 +1509,12 @@ class BVH2FBX_PT_update_panel(bpy.types.Panel):
                 props, "selected_version_index",
                 rows=5,
             )
-            layout.operator("bvh2fbx.install_update", icon='DOWN')
+            layout.operator("bvh2fbx.install_update", icon='IMPORT')
         else:
             # Show a hint when no versions are loaded yet
             layout.label(text="Нажмите 'Проверить обновления'", icon='INFO')
             # Still show install button (will be grayed out by poll)
-            layout.operator("bvh2fbx.install_update", icon='DOWN')
+            layout.operator("bvh2fbx.install_update", icon='IMPORT')
 
 
 # ============================================================================
