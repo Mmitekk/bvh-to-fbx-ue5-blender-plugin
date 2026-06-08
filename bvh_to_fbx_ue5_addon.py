@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BVH to FBX for UE5",
-    "author": "BVH2FBX Converter v21.0",
-    "version": (21, 0, 0),
+    "author": "BVH2FBX Converter v22.0",
+    "version": (22, 0, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BVH2FBX",
     "description": "BVH to FBX for UE5 with Root Motion",
@@ -314,28 +314,35 @@ def _rest_rotation_quat(bone):
 
 
 # ============================================================================
-# RETARGETING ENGINE v21.0 — MANUAL PER-FRAME, DIRECT QUATERNION COPY
+# RETARGETING ENGINE v22.0 — CORRECTED QUATERNION CONJUGATION
 # ============================================================================
 #
-# WHY NO CONSTRAINTS / NO NLA BAKE:
+# v21 BUG: Conjugation formula was WRONG in two ways:
+#   1. Missing armature object rotation: Mixamo has RotX(90°), BVH has Identity
+#      The object rotation MUST be included in the conjugation
+#   2. Wrong conjugation direction: was using C^-1 @ q @ C instead of C @ q @ C^-1
 #
-# v18-v19: Copy Transforms WORLD→WORLD → skeleton exploded (different bone
-#   lengths forced each bone to BVH world position, disconnecting the chain)
+# v22 CORRECT formula:
+#   The rotation delta bvh_q is in BVH bone's local frame.
+#   We need mix_q in Mixamo bone's local frame that represents the same
+#   PHYSICAL rotation delta in world space.
 #
-# v20: Copy Rotation WORLD→WORLD + NLA Bake → skeleton collapsed to a point
-#   (NLA Bake failed with Copy Rotation; WORLD space is wrong because Mixamo
-#   armature has RotX(90°) which makes "world rotation" incompatible)
+#   World-space rest orientations:
+#     W_bvh = R_bvh_obj @ R_bvh_rest
+#     W_mix = R_mix_obj @ R_mix_rest
 #
-# v21: Manual per-frame retargeting. For each frame:
-#   1. Read BVH bone's rotation_quaternion (the POSE rotation delta)
-#   2. Apply conjugation correction for different bone orientations:
-#        mix_q = R_corr^-1 @ bvh_q @ R_corr
-#      where R_corr = R_bvh_rest^-1 @ R_mix_rest (maps Mixamo frame to BVH frame)
-#   3. For root bone: compute location from BVH Hips world position
-#   4. Keyframe
+#   Physical delta in world space = W_bvh @ bvh_q @ W_bvh^-1
+#   Same delta in Mixamo frame: W_mix @ mix_q @ W_mix^-1
 #
-# This avoids ALL constraint/NLA issues and handles coordinate transforms
-# explicitly with proper orthogonalization.
+#   Setting equal and solving:
+#     mix_q = C @ bvh_q @ C^-1
+#   where C = W_mix^-1 @ W_bvh = R_mix_rest^-1 @ R_mix_obj^-1 @ R_bvh_obj @ R_bvh_rest
+#
+#   With R_bvh_obj = Identity, R_mix_obj = RotX(90°):
+#     C = R_mix_rest^-1 @ RotX(-90°) @ R_bvh_rest
+#
+# Also: compute bvh_q from full pose matrix (more reliable than
+# reading rotation_quaternion which depends on rotation_mode).
 #
 
 
@@ -375,16 +382,31 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     print(f"[BVH2FBX] Mix obj: rot={ref_armature.rotation_euler}, scale={ref_armature.scale}")
 
     # =========================================================================
-    # STEP 2: Compute rest-pose rotation corrections (conjugation transforms)
+    # STEP 2: Compute armature object rotation corrections
     # =========================================================================
-    # For each mapped bone pair, compute R_corr that maps from Mixamo bone's
-    # local frame to BVH bone's local frame. Then:
-    #   mix_q = R_corr^-1 @ bvh_q @ R_corr  (conjugation)
+    # CRITICAL: Mixamo armature has RotX(90°) on the object, BVH has Identity.
+    # This MUST be included in the conjugation formula.
+    # =========================================================================
+    bvh_obj_rot = _ortho3(bvh_armature.matrix_world).to_quaternion()
+    mix_obj_rot = _ortho3(ref_armature.matrix_world).to_quaternion()
+    bvh_obj_rot_inv = bvh_obj_rot.inverted()
+    mix_obj_rot_inv = mix_obj_rot.inverted()
+    print(f"[BVH2FBX] BVH obj world rot: ({math.degrees(bvh_obj_rot.angle):.1f}° around ({bvh_obj_rot.axis.x:.2f},{bvh_obj_rot.axis.y:.2f},{bvh_obj_rot.axis.z:.2f}))")
+    print(f"[BVH2FBX] Mix obj world rot: ({math.degrees(mix_obj_rot.angle):.1f}° around ({mix_obj_rot.axis.x:.2f},{mix_obj_rot.axis.y:.2f},{mix_obj_rot.axis.z:.2f}))")
+
+    # =========================================================================
+    # STEP 3: Compute rest-pose rotation corrections (conjugation transforms)
+    # =========================================================================
+    # CORRECTED v22 formula:
+    #   C = R_mix_rest^-1 @ R_mix_obj^-1 @ R_bvh_obj @ R_bvh_rest
+    #   mix_q = C @ bvh_q @ C^-1
     #
-    # This transforms the BVH rotation from BVH bone's local axes to
-    # Mixamo bone's local axes, preserving the physical rotation.
+    # This transfers the rotation delta from BVH bone's local frame to
+    # Mixamo bone's local frame, accounting for:
+    #   - Different armature object rotations (RotX(90°) on Mixamo)
+    #   - Different bone rest orientations (BVH vs Mixamo)
     # =========================================================================
-    R_corr = {}  # ref_name -> Quaternion (Mixamo_frame → BVH_frame)
+    C_conj = {}  # ref_name -> Quaternion (conjugation transform)
     q_angles = {}  # Diagnostic: angle between rest poses
 
     for ref_name, bvh_name in bone_map.items():
@@ -400,12 +422,11 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
         R_bvh_rest = _rest_rotation_quat(bvh_pb)  # BVH bone rest in armature-local space
         R_mix_rest = _rest_rotation_quat(ref_pb)   # Mixamo bone rest in armature-local space
 
-        # R_corr maps from Mixamo local frame to BVH local frame:
-        # v_in_bvh_frame = R_bvh_rest^-1 @ v_in_armature = R_bvh_rest^-1 @ R_mix_rest @ v_in_mix_frame
-        # So: R_corr = R_bvh_rest^-1 @ R_mix_rest
-        R_corr[ref_name] = R_bvh_rest.inverted() @ R_mix_rest
+        # CORRECTED v22: Include armature object rotations!
+        # C = R_mix_rest^-1 @ R_mix_obj^-1 @ R_bvh_obj @ R_bvh_rest
+        C_conj[ref_name] = R_mix_rest.inverted() @ mix_obj_rot_inv @ bvh_obj_rot @ R_bvh_rest
 
-        # Diagnostic: angle between rest poses
+        # Diagnostic: angle between rest poses (in armature-local space)
         dot = abs(R_bvh_rest.dot(R_mix_rest))
         dot = min(1.0, dot)
         angle_deg = math.degrees(2 * math.acos(dot))
@@ -420,7 +441,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     print(f"[BVH2FBX] Bones with Q-angle > 45°: {large_angles}/{len(q_angles)}")
 
     # =========================================================================
-    # STEP 3: Detect forward direction from BVH animation
+    # STEP 4: Detect forward direction from BVH animation
     # =========================================================================
     forward_quat = None
     forward_angle = 0.0
@@ -450,7 +471,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                 print(f"[BVH2FBX] Walk dir: ({walk_dir.x:.3f}, {walk_dir.y:.3f}, {walk_dir.z:.3f}), correction: {forward_angle:.1f} deg")
 
     # =========================================================================
-    # STEP 4: Prepare Mixamo armature for animation
+    # STEP 5: Prepare Mixamo armature for animation
     # =========================================================================
     for pb in ref_armature.pose.bones:
         pb.rotation_mode = 'QUATERNION'
@@ -475,10 +496,22 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     root_rest_pos = root_rest_mat.translation.copy()
 
     # =========================================================================
-    # STEP 5: Per-frame retargeting
+    # STEP 6: Per-frame retargeting
+    # =========================================================================
+    # For each frame:
+    #   1. Read BVH bone's pose matrix → extract rotation delta from rest
+    #   2. Apply corrected conjugation: mix_q = C @ bvh_q @ C^-1
+    #   3. For root bone: compute location from BVH Hips world position
+    #   4. Keyframe
     # =========================================================================
     first_root_world_pos = None
     prev_quat = {}
+
+    # Pre-compute rest pose rotations for BVH bones
+    bvh_rest_rots = {}
+    for ref_name, bvh_name in bone_map.items():
+        if bvh_name in bvh_armature.pose.bones:
+            bvh_rest_rots[bvh_name] = _rest_rotation_quat(bvh_armature.pose.bones[bvh_name])
 
     for fi in range(num_frames):
         frame = frame_start + fi
@@ -494,16 +527,19 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
             ref_pb = ref_armature.pose.bones[ref_name]
             bvh_pb = bvh_armature.pose.bones[bvh_name]
 
-            # Read BVH bone's POSE rotation (delta from rest pose)
-            bvh_q = bvh_pb.rotation_quaternion.copy()
+            # Compute BVH bone's rotation delta from rest pose
+            # Using full pose matrix is more reliable than rotation_quaternion
+            # (which depends on rotation_mode and may be Euler)
+            bvh_pose_rot = _ortho3(bvh_pb.matrix).to_quaternion()
+            bvh_rest_rot = bvh_rest_rots[bvh_name]
+            bvh_q = bvh_rest_rot.inverted() @ bvh_pose_rot
+            bvh_q.normalize()
 
-            # Apply conjugation correction for different bone orientations
-            if ref_name in R_corr:
-                rc = R_corr[ref_name]
-                # mix_q = rc^-1 @ bvh_q @ rc
-                # This transforms the rotation from BVH bone's local frame
-                # to Mixamo bone's local frame
-                mix_q = rc.inverted() @ bvh_q @ rc
+            # CORRECTED v22: Apply conjugation with armature object rotations
+            # mix_q = C @ bvh_q @ C^-1
+            if ref_name in C_conj:
+                c = C_conj[ref_name]
+                mix_q = c @ bvh_q @ c.inverted()
                 mix_q.normalize()
             else:
                 mix_q = bvh_q
@@ -533,7 +569,6 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
                 mix_local_pos = mix_obj_inv @ rel_world_pos
 
                 # Convert to bone's local space (relative to rest pose)
-                # bone.location = rest_rot^-1 @ (armature_local_pos - rest_pos)
                 bone_loc = root_rest_rot_inv @ (mix_local_pos - root_rest_pos)
 
                 # Apply scale factor
@@ -551,7 +586,7 @@ def retarget_animation(bvh_armature, ref_armature, scale_factor=1.0):
     print(f"[BVH2FBX] Retargeted {num_frames} frames, {len(bone_map)} bones")
 
     # =========================================================================
-    # STEP 6: Apply forward direction correction to root bone
+    # STEP 7: Apply forward direction correction to root bone
     # =========================================================================
     if forward_quat and root_bone_name in ref_armature.pose.bones:
         # Convert forward correction to root bone's local space
